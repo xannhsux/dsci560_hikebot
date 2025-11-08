@@ -1,0 +1,9 @@
+# Ignore generated Trailforks exports
+backend/data/trailforks_routes.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local env files
+backend/.env
