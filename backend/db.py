@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+import hashlib
+from typing import Dict, List, Tuple
 
 import seed_routes
 from models import (
+    AuthResponse,
     ChatRequest,
     EventCard,
     EventRequest,
@@ -16,6 +18,10 @@ from models import (
     RouteRecommendation,
     SOSCard,
     SOSRequest,
+    TripHistoryEntry,
+    TripHistoryResponse,
+    UserLogin,
+    UserSignup,
     WeatherRequest,
     WeatherSnapshot,
 )
@@ -27,6 +33,33 @@ def load_routes() -> List[Route]:
 
 
 ROUTE_STORE: List[Route] = load_routes()
+USER_STORE: Dict[str, str] = {}
+TRIP_HISTORY: Dict[str, List[TripHistoryEntry]] = {
+    "scout": [
+        TripHistoryEntry(
+            trip_name="Baden-Powell Sunrise Push",
+            date="2025-03-22",
+            role="Lead",
+            status="completed",
+        ),
+        TripHistoryEntry(
+            trip_name="Donner Ridge Overnight",
+            date="2025-04-12",
+            role="Driver",
+            status="completed",
+        ),
+        TripHistoryEntry(
+            trip_name="Muir Woods Shakeout",
+            date="2025-05-04",
+            role="Participant",
+            status="planned",
+        ),
+    ]
+}
+
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 def _matches_filters(route: Route, filters: RouteFilters) -> Tuple[bool, List[str]]:
@@ -157,3 +190,27 @@ def craft_chat_reply(request: ChatRequest) -> str:
             "Ping /routes/recommendations for the structured card."
         )
     return greeting + "I'm standing by—ask for routes, weather, gear, or safety info to get started."
+
+
+def create_user(payload: UserSignup) -> AuthResponse:
+    username = payload.username.strip().lower()
+    if not username:
+        raise ValueError("Username required.")
+    if username in USER_STORE:
+        raise ValueError("User already exists.")
+    USER_STORE[username] = _hash_password(payload.password)
+    TRIP_HISTORY.setdefault(username, [])
+    return AuthResponse(username=username, message="Signup successful.")
+
+
+def authenticate_user(payload: UserLogin) -> AuthResponse:
+    username = payload.username.strip().lower()
+    stored = USER_STORE.get(username)
+    if not stored or stored != _hash_password(payload.password):
+        raise ValueError("Invalid username or password.")
+    return AuthResponse(username=username, message="Login successful.")
+
+
+def get_trip_history(username: str) -> TripHistoryResponse:
+    records = TRIP_HISTORY.get(username.lower(), [])
+    return TripHistoryResponse(trips=records)

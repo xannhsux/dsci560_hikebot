@@ -115,3 +115,29 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class UserSignup(BaseModel):
+    username: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    username: str
+    message: str
+
+
+class TripHistoryEntry(BaseModel):
+    trip_name: str
+    date: str
+    role: str
+    status: Literal["completed", "planned"]
+
+
+class TripHistoryResponse(BaseModel):
+    trips: List[TripHistoryEntry]

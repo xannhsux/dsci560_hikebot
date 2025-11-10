@@ -15,6 +15,10 @@ hikebot/
 │  │  └─ trailforks_routes.json   # Generated seed file (gitignored)
 │  ├─ requirements.txt    # Python dependencies
 │  └─ .env.example        # Sample configuration for local dev
+├─ frontend/
+│  ├─ app.py              # Streamlit chat interface
+│  ├─ requirements.txt    # UI dependencies
+│  └─ .env.example        # BACKEND_URL config for the UI container
 ├─ docker-compose.yml     # API + Postgres + Redis stack
 └─ README.md
 ```
@@ -23,8 +27,9 @@ hikebot/
 1. **Copy env vars**  
    `cp backend/.env.example backend/.env` (edit values as needed).
 2. **Launch services**  
-   `docker compose up --build` – this installs Python deps inside the container and starts `uvicorn`.
-3. **Hit the API**  
+   `docker compose up --build` – this installs Python deps inside the containers, starts FastAPI, and brings up the Streamlit UI.
+3. **Open the chatbot**  
+   Visit `http://localhost:8501` for the HikeBot UI (log in/sign up to chat and view your trip history) or use the REST API directly:
    - Health: `GET http://localhost:8000/health`  
    - Route recs: `POST http://localhost:8000/routes/recommendations`  
      ```json
@@ -36,7 +41,7 @@ hikebot/
      ```
    - Gear checklist: `POST http://localhost:8000/gear/checklist`
 
-The backend currently relies on in-memory fixtures; Postgres/Redis containers are placeholders for the upcoming persistence and job layers planned in Milestone 2.
+The backend currently relies on in-memory fixtures; Postgres/Redis containers are placeholders for the upcoming persistence and job layers planned in Milestone 2. The Streamlit UI proxies requests to `/chat`, shows each user’s trip history in the sidebar, and handles simple signup/login (credentials live in-memory for demo purposes).
 
 ## Syncing Routes from Trailforks
 1. Request a Trailforks API key (Pinkbike account required) and set it locally:  

@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 
 import db
 from models import (
+    AuthResponse,
     ChatRequest,
     ChatResponse,
     EventCard,
@@ -16,6 +17,9 @@ from models import (
     RouteFilters,
     SOSCard,
     SOSRequest,
+    TripHistoryResponse,
+    UserLogin,
+    UserSignup,
     WeatherRequest,
     WeatherSnapshot,
 )
@@ -64,3 +68,24 @@ def gear_checklist(payload: GearRequest) -> GearChecklist:
 @app.post("/safety/sos-card", response_model=SOSCard)
 def sos_card(payload: SOSRequest) -> SOSCard:
     return db.build_sos_card(payload)
+
+
+@app.post("/auth/signup", response_model=AuthResponse, status_code=201)
+def signup(payload: UserSignup) -> AuthResponse:
+    try:
+        return db.create_user(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(payload: UserLogin) -> AuthResponse:
+    try:
+        return db.authenticate_user(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@app.get("/users/{username}/trips", response_model=TripHistoryResponse)
+def trip_history(username: str) -> TripHistoryResponse:
+    return db.get_trip_history(username)
