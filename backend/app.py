@@ -14,6 +14,7 @@ from models import (
     GearChecklist,
     GearRequest,
     RouteRecommendationResponse,
+    RouteListResponse,
     RouteFilters,
     SOSCard,
     SOSRequest,
@@ -44,6 +45,11 @@ def route_recommendations(filters: RouteFilters) -> RouteRecommendationResponse:
     return RouteRecommendationResponse(recommendations=recs)
 
 
+@app.get("/routes", response_model=RouteListResponse)
+def list_routes() -> RouteListResponse:
+    return db.list_routes()
+
+
 @app.post("/events/card", response_model=EventCard)
 def create_event_card(payload: EventRequest) -> EventCard:
     try:
@@ -55,7 +61,7 @@ def create_event_card(payload: EventRequest) -> EventCard:
 @app.post("/weather/snapshot", response_model=WeatherSnapshot)
 def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
     try:
-        return db.mock_weather_snapshot(payload)
+        return db.weather_snapshot(payload)
     except ValueError as exc:  # pragma: no cover
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

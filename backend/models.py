@@ -23,6 +23,8 @@ class Route(BaseModel):
     tags: List[RouteTag]
     gpx_url: str
     summary: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class RouteFilters(BaseModel):
@@ -43,6 +45,10 @@ class RouteRecommendation(BaseModel):
 
 class RouteRecommendationResponse(BaseModel):
     recommendations: List[RouteRecommendation]
+
+
+class RouteListResponse(BaseModel):
+    routes: List[Route]
 
 
 class EventRequest(BaseModel):

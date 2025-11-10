@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -78,6 +79,20 @@ def fetch_trip_history(username: str) -> List[Dict[str, Any]]:
     return response.json().get("trips", [])
 
 
+@st.cache_data(ttl=600)
+def fetch_routes() -> List[Dict[str, Any]]:
+    response = requests.get(f"{BACKEND_URL}/routes", timeout=15)
+    response.raise_for_status()
+    return response.json().get("routes", [])
+
+
+def request_weather(route_id: str, when: datetime) -> Dict[str, Any]:
+    payload = {"route_id": route_id, "start_iso": when.isoformat()}
+    response = requests.post(f"{BACKEND_URL}/weather/snapshot", json=payload, timeout=20)
+    response.raise_for_status()
+    return response.json()
+
+
 def render_sidebar(username: str) -> None:
     with st.sidebar:
         st.header("Trip History")
@@ -100,6 +115,43 @@ def render_sidebar(username: str) -> None:
             st.rerun()
 
 
+def render_weather_tool() -> None:
+    st.subheader("Weather Snapshot")
+    routes = fetch_routes()
+    if not routes:
+        st.warning("No routes available to check weather.")
+        return
+
+    options = {f"{r['name']} — {r.get('location', '')}": r["id"] for r in routes}
+    labels = list(options.keys())
+    default_index = 0
+    selected_label = st.selectbox("Choose a route", labels, index=default_index)
+    selected_route = options[selected_label]
+
+    default_time = datetime.utcnow().replace(microsecond=0)
+    date_val = st.date_input("Start date", value=default_time.date(), key="weather_date")
+    time_val = st.time_input("Start time", value=default_time.time(), key="weather_time")
+    target = datetime.combine(date_val, time_val)
+
+    if st.button("Get forecast", key="weather_button"):
+        try:
+            data = request_weather(selected_route, target)
+        except requests.RequestException as exc:
+            st.error(f"Unable to fetch weather: {exc}")
+            return
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Temperature (°C)", data.get("temp_c"))
+        with col2:
+            prob = data.get("precip_probability", 0)
+            st.metric("Precip probability", f"{prob*100:.0f}%")
+        st.write(
+            f"Lightning risk: **{data.get('lightning_risk', 'low').title()}**, "
+            f"Fire risk: **{data.get('fire_risk', 'low').title()}**"
+        )
+        st.info(data.get("advisory", ""))
+
+
 def main() -> None:
     st.set_page_config(page_title="HikeBot Chat", page_icon="🥾")
     st.title("HikeBot")
@@ -118,6 +170,7 @@ def main() -> None:
     render_sidebar(user)
     st.info(f"Logged in as {user}")
     render_chat(st.session_state.messages)
+    render_weather_tool()
 
     if prompt := st.chat_input("Ask about hikes, gear, weather, or safety…"):
         st.session_state.messages.append({"role": "user", "content": prompt})

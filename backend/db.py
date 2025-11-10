@@ -6,6 +6,7 @@ import hashlib
 from typing import Dict, List, Tuple
 
 import seed_routes
+import weather_service
 from models import (
     AuthResponse,
     ChatRequest,
@@ -16,6 +17,7 @@ from models import (
     Route,
     RouteFilters,
     RouteRecommendation,
+    RouteListResponse,
     SOSCard,
     SOSRequest,
     TripHistoryEntry,
@@ -25,6 +27,8 @@ from models import (
     WeatherRequest,
     WeatherSnapshot,
 )
+
+DEFAULT_COORDS = (34.0522, -118.2437)
 
 
 def load_routes() -> List[Route]:
@@ -108,6 +112,10 @@ def recommend_routes(filters: RouteFilters, limit: int = 3) -> List[RouteRecomme
     return candidates[:limit]
 
 
+def list_routes() -> RouteListResponse:
+    return RouteListResponse(routes=ROUTE_STORE)
+
+
 def generate_event_card(payload: EventRequest) -> EventCard:
     route = next((r for r in ROUTE_STORE if r.id == payload.route_id), None)
     if not route:
@@ -139,20 +147,13 @@ def generate_event_card(payload: EventRequest) -> EventCard:
     )
 
 
-def mock_weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
+def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
     route = next((r for r in ROUTE_STORE if r.id == payload.route_id), None)
     if not route:
         raise ValueError(f"Route {payload.route_id} not found")
-
-    hour = payload.start_iso.hour
-    temp = 5 + (hour * 0.5) + (route.elevation_gain_m / 400)
-    return WeatherSnapshot(
-        temp_c=round(temp, 1),
-        precip_probability=0.2,
-        lightning_risk="low",
-        fire_risk="moderate" if "summer" in route.summary.lower() else "low",
-        advisory="Carry layers; expect cooler temps near the summit.",
-    )
+    latitude = route.latitude or DEFAULT_COORDS[0]
+    longitude = route.longitude or DEFAULT_COORDS[1]
+    return weather_service.get_weather_snapshot(latitude, longitude, payload.start_iso)
 
 
 def build_gear_checklist(request: GearRequest) -> GearChecklist:

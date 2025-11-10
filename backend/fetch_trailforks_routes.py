@@ -87,6 +87,11 @@ def normalize_trail(trail: Dict[str, Any], default_drive_time: int) -> Dict[str,
     if _bool_flag(trail.get("summit")):
         tags.append("summit")
 
+    lat_raw = trail.get("lat") or trail.get("latitude")
+    lon_raw = trail.get("lon") or trail.get("lng") or trail.get("longitude")
+    latitude = float(lat_raw) if lat_raw not in (None, "") else None
+    longitude = float(lon_raw) if lon_raw not in (None, "") else None
+
     return {
         "id": str(trail.get("trailid") or trail.get("id")),
         "name": trail.get("title") or trail.get("name") or "Unnamed Trail",
@@ -98,6 +103,8 @@ def normalize_trail(trail: Dict[str, Any], default_drive_time: int) -> Dict[str,
         "tags": tags,
         "gpx_url": trail.get("gpx_url") or trail.get("url") or "",
         "summary": trail.get("desc") or trail.get("summary") or "",
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
 
