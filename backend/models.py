@@ -16,31 +16,27 @@ class Route(BaseModel):
     id: str
     name: str
     location: str
-    distance_km: float = Field(gt=0)
-    elevation_gain_m: int = Field(ge=0)
+    distance_km: float = Field(..., description="Total distance in kilometers")
+    elevation_gain_m: int = Field(..., description="Total elevation gain in meters")
     difficulty: Difficulty
-    drive_time_min: int = Field(ge=0)
-    tags: List[RouteTag]
-    gpx_url: str
-    summary: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    drive_time_min: int = Field(..., description="Approximate driving time from home base")
+    tags: List[RouteTag] = []
 
 
 class RouteFilters(BaseModel):
-    min_distance_km: Optional[float] = Field(default=None, ge=0)
-    max_distance_km: Optional[float] = Field(default=None, ge=0)
-    max_elevation_gain_m: Optional[int] = Field(default=None, ge=0)
+    max_distance_km: Optional[float] = None
+    max_elevation_gain_m: Optional[int] = None
+    max_drive_time_min: Optional[int] = None
     difficulty: Optional[Difficulty] = None
-    max_drive_time_min: Optional[int] = Field(default=None, ge=0)
-    tags: List[RouteTag] = Field(default_factory=list)
-    need_water: bool = False
+    need_dog_friendly: bool = False
     need_camping: bool = False
+    need_water: bool = False
 
 
 class RouteRecommendation(BaseModel):
     route: Route
-    match_reasons: List[str]
+    score: float
+    reasons: List[str]
 
 
 class RouteRecommendationResponse(BaseModel):
@@ -51,67 +47,81 @@ class RouteListResponse(BaseModel):
     routes: List[Route]
 
 
-class EventRequest(BaseModel):
-    route_id: str
-    start_iso: datetime
-    meetup_point: str
-    organizer: str
-    seats_needed: int = Field(ge=0)
-    driver_capacity: int = Field(default=0, ge=0)
-    difficulty_override: Optional[Difficulty] = None
-
-
-class EventCard(BaseModel):
-    title: str
-    schedule: str
-    meetup_point: str
-    difficulty: Difficulty
-    gpx_url: str
-    required_equipment: List[str]
-    seats_needed: int
-    driver_capacity: int
-    rsvp_instructions: str
-
-
 class GearRequest(BaseModel):
-    season: Literal["winter", "spring", "summer", "fall"]
-    altitude_m: int = Field(ge=0)
-    snowpack: bool = False
-    trip_hours: int = Field(ge=1)
+    season: Literal["spring", "summer", "fall", "winter"]
+    hours: float = Field(..., gt=0, description="Planned moving time in hours")
+    altitude_band: Literal["low", "mid", "high"] = "low"
+    terrain: List[Literal["dry", "snow", "mud", "scramble"]] = []
+    distance_km: Optional[float] = None
+    elevation_gain_m: Optional[int] = None
+    group_size: int = 1
 
 
 class GearChecklist(BaseModel):
-    checklist: List[str]
-    calories_kcal: int
+    items: List[str]
     water_liters: float
+    calories_kcal: int
+    notes: Optional[str] = None
 
 
 class WeatherRequest(BaseModel):
+    """Weather request payload used by the /weather/snapshot endpoint.
+
+    Streamlit 前端发送的是：
+        {
+            "route_id": "<string>",
+            "start_iso": "2025-11-15T20:54:00"
+        }
+    所以这里字段名就叫 start_iso，Pydantic 才能直接解析。
+    """
     route_id: str
     start_iso: datetime
 
 
 class WeatherSnapshot(BaseModel):
+    """Compact weather summary returned to the frontend."""
+    summary: str
     temp_c: float
-    precip_probability: float
+    precip_prob: float
     lightning_risk: Literal["low", "moderate", "high"]
     fire_risk: Literal["low", "moderate", "high"]
-    advisory: str
 
 
 class SOSRequest(BaseModel):
-    route_id: str
-    meetup_point: str
-    emergency_contact: str
-    countdown_minutes: int = Field(gt=0)
+    event_id: Optional[str] = None
+    route_id: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class SOSCard(BaseModel):
-    ranger_station_phone: str
-    emergency_contact: str
+    event_id: Optional[str] = None
+    route_name: Optional[str] = None
+    ranger_station: Optional[str] = None
+    emergency_numbers: List[str] = []
+    last_check_in: Optional[datetime] = None
+    countdown_minutes: Optional[int] = None
+
+
+class EventRequest(BaseModel):
+    username: str
+    route_id: str
+    start_time: datetime
     meetup_point: str
-    countdown_minutes: int
-    coordinates_hint: str
+    seats_needed: int = 1
+    driver_flag: bool = False
+    vehicle_capacity: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class EventCard(BaseModel):
+    id: str
+    route: Route
+    start_time: datetime
+    meetup_point: str
+    organizer: str
+    difficulty: Difficulty
+    gpx_url: Optional[str] = None
+    summary: str
 
 
 class ChatRequest(BaseModel):
@@ -121,6 +131,13 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class ChatMessage(BaseModel):
+    username: str
+    user_message: str
+    timestamp: datetime
+
 
 
 class UserSignup(BaseModel):
@@ -147,3 +164,4 @@ class TripHistoryEntry(BaseModel):
 
 class TripHistoryResponse(BaseModel):
     trips: List[TripHistoryEntry]
+

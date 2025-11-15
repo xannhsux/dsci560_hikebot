@@ -26,6 +26,7 @@ hikebot/
 ## Getting Started
 1. **Copy env vars**  
    `cp backend/.env.example backend/.env` (edit values as needed).
+   
 2. **Launch services**  
    `docker compose up --build` – this installs Python deps inside the containers, starts FastAPI, and brings up the Streamlit UI.
 3. **Open the chatbot**  

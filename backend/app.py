@@ -1,97 +1,107 @@
-"""FastAPI entrypoint exposing the hiking chatbot scaffolding."""
+"""FastAPI backend for the HikeBot group chat experience."""
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from datetime import datetime
 
-import db
+from fastapi import FastAPI, HTTPException, Body
+
+from fastapi.middleware.cors import CORSMiddleware
+
 from models import (
     AuthResponse,
     ChatRequest,
     ChatResponse,
-    EventCard,
-    EventRequest,
-    GearChecklist,
-    GearRequest,
-    RouteRecommendationResponse,
-    RouteListResponse,
-    RouteFilters,
-    SOSCard,
-    SOSRequest,
     TripHistoryResponse,
     UserLogin,
     UserSignup,
+    RouteListResponse,
     WeatherRequest,
     WeatherSnapshot,
 )
+import db
+from db import (
+    authenticate_user,
+    get_trip_history_for_user,
+    handle_chat,
+    signup_user,
+    list_routes,
+)
 
-app = FastAPI(title="HikeBot API", version="0.1.0")
+app = FastAPI(title="HikeBot Backend")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # local dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/health")
-def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+# -------- Auth --------
 
-
-@app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
-    reply = db.craft_chat_reply(payload)
-    return ChatResponse(reply=reply)
-
-
-@app.post("/routes/recommendations", response_model=RouteRecommendationResponse)
-def route_recommendations(filters: RouteFilters) -> RouteRecommendationResponse:
-    recs = db.recommend_routes(filters)
-    return RouteRecommendationResponse(recommendations=recs)
-
-
-@app.get("/routes", response_model=RouteListResponse)
-def list_routes() -> RouteListResponse:
-    return db.list_routes()
-
-
-@app.post("/events/card", response_model=EventCard)
-def create_event_card(payload: EventRequest) -> EventCard:
-    try:
-        return db.generate_event_card(payload)
-    except ValueError as exc:  # pragma: no cover - simple 404 mapping
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/weather/snapshot", response_model=WeatherSnapshot)
-def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
-    try:
-        return db.weather_snapshot(payload)
-    except ValueError as exc:  # pragma: no cover
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/gear/checklist", response_model=GearChecklist)
-def gear_checklist(payload: GearRequest) -> GearChecklist:
-    return db.build_gear_checklist(payload)
-
-
-@app.post("/safety/sos-card", response_model=SOSCard)
-def sos_card(payload: SOSRequest) -> SOSCard:
-    return db.build_sos_card(payload)
-
-
-@app.post("/auth/signup", response_model=AuthResponse, status_code=201)
+@app.post("/auth/signup", response_model=AuthResponse)
 def signup(payload: UserSignup) -> AuthResponse:
     try:
-        return db.create_user(payload)
+        return signup_user(payload.username, payload.password)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/auth/login", response_model=AuthResponse)
 def login(payload: UserLogin) -> AuthResponse:
     try:
-        return db.authenticate_user(payload)
+        return authenticate_user(payload.username, payload.password)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(status_code=401, detail=str(exc))
 
 
-@app.get("/users/{username}/trips", response_model=TripHistoryResponse)
+# -------- Chat --------
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest) -> ChatResponse:
+    """
+    Main group-chat endpoint.
+    """
+    return handle_chat(req)
+
+
+# -------- Routes & trip history --------
+
+@app.get("/routes", response_model=RouteListResponse)
+def get_routes() -> RouteListResponse:
+    """
+    Used by Streamlit weather tool.
+    """
+    return list_routes()
+
+
+# 原来的历史接口
+@app.get("/trips/history/{username}", response_model=TripHistoryResponse)
 def trip_history(username: str) -> TripHistoryResponse:
-    return db.get_trip_history(username)
+    return get_trip_history_for_user(username)
+
+
+# 兼容前端调用的 /users/{username}/trips
+@app.get("/users/{username}/trips", response_model=TripHistoryResponse)
+def user_trips(username: str) -> TripHistoryResponse:
+    return get_trip_history_for_user(username)
+
+
+from models import WeatherRequest, WeatherSnapshot
+import db
+
+@app.post("/weather/snapshot", response_model=WeatherSnapshot)
+def weather_snapshot_endpoint(payload: WeatherRequest) -> WeatherSnapshot:
+    """
+    Body JSON:
+    {
+      "route_id": "<string>",
+      "start_iso": "2025-11-15T20:54:00"
+    }
+    """
+    try:
+        return db.weather_snapshot(payload)
+    except ValueError as exc:
+        # 找不到路线 / 天气拿不到
+        raise HTTPException(status_code=404, detail=str(exc))

@@ -1,79 +1,73 @@
-"""Open-Meteo powered weather helper."""
+"""Weather helper that wraps NOAAWeatherCollector for the hiking chatbot."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import List
-
-import openmeteo_requests
-import pandas as pd
-import requests_cache
-from retry_requests import retry
+from typing import Dict, Any, Optional
 
 from models import WeatherSnapshot
+from noaa_weather_collector import NOAAWeatherCollector
 
-cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
-retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
-client = openmeteo_requests.Client(session=retry_session)
-
-WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+_collector = NOAAWeatherCollector()
 
 
-def _target_as_utc(timestamp: datetime) -> datetime:
-    if timestamp.tzinfo:
-        return timestamp.astimezone(timezone.utc)
-    return timestamp.replace(tzinfo=timezone.utc)
+def get_weather_snapshot(lat: float, lon: float, name: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns a single NOAA weather record dict for a given hiking location.
+    The raw dict includes clothing recommendations, hiking conditions, etc.
+    """
+    try:
+        record = _collector.get_location_weather(lat, lon, name)
+        return record
+    except Exception:
+        return None
 
 
-def _closest_index(timestamps: List[datetime], target: datetime) -> int:
-    diffs = [abs((ts - target).total_seconds()) for ts in timestamps]
-    return diffs.index(min(diffs))
-
-
-def _prep_hourly_times(hourly) -> List[datetime]:
-    rng = pd.date_range(
-        start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
-        end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
-        freq=pd.Timedelta(seconds=hourly.Interval()),
-        inclusive="left",
-    )
-    return [ts.to_pydatetime() for ts in rng]
-
-
-def get_weather_snapshot(latitude: float, longitude: float, target_time: datetime) -> WeatherSnapshot:
-    params = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "hourly": ["precipitation_probability"],
-        "current": ["temperature_2m", "wind_speed_10m", "precipitation", "rain"],
-    }
-    responses = client.weather_api(WEATHER_URL, params=params)
-    response = responses[0]
-
-    current = response.Current()
-    temp_c = current.Variables(0).Value()
-    precip_amount = current.Variables(2).Value()
-
-    hourly = response.Hourly()
-    hourly_probs = hourly.Variables(0).ValuesAsNumpy()
-    if len(hourly_probs) == 0:
-        precip_probability = 0.0
+def summarize_weather(record: Dict[str, Any]) -> WeatherSnapshot:
+    """
+    Convert the raw NOAA record into a compact WeatherSnapshot schema.
+    """
+    temp_f = record.get("temperature")
+    # crude conversion to Celsius if needed
+    if record.get("temperature_unit") == "F" and temp_f is not None:
+        temp_c = (temp_f - 32) * 5.0 / 9.0
     else:
-        timestamps = _prep_hourly_times(hourly)
-        idx = _closest_index(timestamps, _target_as_utc(target_time))
-        precip_probability = float(hourly_probs[min(idx, len(hourly_probs) - 1)] / 100)
+        temp_c = float(temp_f)
 
-    lightning_risk = "high" if precip_probability > 0.7 else "moderate" if precip_probability > 0.4 else "low"
-    fire_risk = "high" if precip_probability < 0.1 and precip_amount == 0 else "moderate" if precip_probability < 0.3 else "low"
-    advisory = (
-        f"Current temp {temp_c:.1f}°C, precip chance {precip_probability*100:.0f}%. "
-        "Pack layers and check skies near exposed ridgelines."
+    precip_field = record.get("precipitation_chance", "0%").replace("%", "")
+    try:
+        precip_probability = float(precip_field) / 100.0
+    except Exception:
+        precip_probability = 0.0
+
+    text = record.get("detailed_forecast", "") or record.get("short_forecast", "")
+
+    if precip_probability > 0.7:
+        lightning_risk = "high"
+    elif precip_probability > 0.4:
+        lightning_risk = "moderate"
+    else:
+        lightning_risk = "low"
+
+    # very naive fire risk heuristic based on precipitation
+    if precip_probability < 0.1:
+        fire_risk = "high"
+    elif precip_probability < 0.3:
+        fire_risk = "moderate"
+    else:
+        fire_risk = "low"
+
+        summary = (
+        f"Temperature around {temp_c:.1f}°C, "
+        f"precipitation chance {precip_probability * 100:.0f}%. "
+        f"Conditions: {record.get('short_forecast', 'Unknown')}."
     )
 
+    # Map into our compact WeatherSnapshot schema expected by the API
     return WeatherSnapshot(
+        summary=summary,
         temp_c=round(temp_c, 1),
-        precip_probability=round(precip_probability, 2),
-        lightning_risk=lightning_risk,
-        fire_risk=fire_risk,
-        advisory=advisory,
+        precip_prob=round(precip_probability, 2),
+        lightning_risk=lightning_risk,  # type: ignore[arg-type]
+        fire_risk=fire_risk,            # type: ignore[arg-type]
     )
+
