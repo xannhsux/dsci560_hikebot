@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>HikeBot Group Chat</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      background: #f5f5f5;
+    }
+    #sidebar {
+      width: 220px;
+      background: #20232a;
+      color: #ffffff;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    #messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      box-sizing: border-box;
+    }
+    .msg {
+      margin-bottom: 8px;
+    }
+    .meta {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 2px;
+    }
+    .bubble {
+      display: inline-block;
+      padding: 8px 12px;
+      border-radius: 16px;
+      background: #ffffff;
+      max-width: 60%;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+    .me {
+      text-align: right;
+    }
+    .me .bubble {
+      background: #DCF8C6;
+    }
+    .system .bubble {
+      background: #eeeeee;
+      font-style: italic;
+    }
+    #input-area {
+      padding: 12px 16px;
+      display: flex;
+      gap: 8px;
+      box-sizing: border-box;
+      border-top: 1px solid #ddd;
+      background: #ffffff;
+    }
+    #input {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+    button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      background: #4caf50;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #aaa;
+      cursor: default;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h3>HikeBot Chat</h3>
+    <p>Username:</p>
+    <input id="username" type="text" style="width: 100%; padding: 6px;" />
+    <button id="connect-btn" style="margin-top: 8px; width: 100%;">Connect</button>
+    <p style="margin-top: 16px; font-size: 12px; color: #ccc;">
+      Open this page on multiple computers / browsers,<br />
+      use different usernames, and chat together.
+    </p>
+    <p id="status" style="margin-top: 16px; font-size: 12px;"></p>
+  </div>
+  <div id="main">
+    <div id="messages"></div>
+    <div id="input-area">
+      <input id="input" type="text" placeholder="Type a message…" />
+      <button id="send-btn" disabled>Send</button>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let currentUser = null;
+
+    const messagesDiv = document.getElementById("messages");
+    const input = document.getElementById("input");
+    const sendBtn = document.getElementById("send-btn");
+    const connectBtn = document.getElementById("connect-btn");
+    const usernameInput = document.getElementById("username");
+    const statusP = document.getElementById("status");
+
+    function addMessage(msg) {
+      const div = document.createElement("div");
+      div.className = "msg";
+
+      const isMe = msg.sender === currentUser;
+      const isSystem = msg.role === "system";
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${msg.sender} • ${msg.timestamp || ""}`;
+
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = msg.content || "";
+
+      if (isMe) div.classList.add("me");
+      if (isSystem) div.classList.add("system");
+
+      div.appendChild(meta);
+      div.appendChild(bubble);
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function connect() {
+      const username = usernameInput.value.trim();
+      if (!username) {
+        alert("Please enter a username.");
+        return;
+      }
+      currentUser = username;
+      const loc = window.location;
+      const protocol = loc.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = `${protocol}://${loc.host}/ws/chat/${encodeURIComponent(username)}`;
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        statusP.textContent = "✅ Connected as " + username;
+        sendBtn.disabled = false;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          addMessage(msg);
+        } catch (err) {
+          console.error("Invalid message:", event.data);
+        }
+      };
+
+      ws.onclose = () => {
+        statusP.textContent = "❌ Disconnected";
+        sendBtn.disabled = true;
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+        statusP.textContent = "⚠️ Error";
+      };
+    }
+
+    connectBtn.addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+      connect();
+    });
+
+    sendBtn.addEventListener("click", () => {
+      const text = input.value.trim();
+      if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(text);
+      input.value = "";
+      input.focus();
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        sendBtn.click();
+      }
+    });
+  </script>
+</body>
+</html>

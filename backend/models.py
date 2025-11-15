@@ -140,6 +140,7 @@ class ChatMessage(BaseModel):
 
 
 
+
 class UserSignup(BaseModel):
     username: str
     password: str

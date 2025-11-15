@@ -278,64 +278,78 @@ Please update the group and @HikeBot if the plan changes or if you need to cance
 
 # ---- Core chat handler ----
 
+# ---- Core chat handler ----
+
 def handle_chat(req: ChatRequest) -> ChatResponse:
-    session_id = req.session_id
-    for m in req.messages:
-        record_chat_message(session_id, m)
+    """Simple chat handler that works with the current ChatRequest(user_message, filters)."""
 
-    last_msg = req.messages[-1]
+    text = (req.user_message or "").strip()
+    lower = text.lower()
 
-    # Very naive heuristics based on recent human messages
-    recent = get_recent_human_messages(session_id)
-    merged = "\n".join(f"{m.sender}: {m.content}" for m in recent).lower()
+    if not text:
+        return ChatResponse(reply="I didn't catch that. Try asking about trails, weather, or gear 🙂")
 
-    # If we detect a confirmation, generate an announcement
-    if detect_confirmation(last_msg, session_id):
-        reply = generate_announcement_text(session_id, username=last_msg.sender)
-        return ChatResponse(reply=reply)
-
-    # If people are asking for a route, suggest one
-    if any(word in merged for word in ["trail", "route", "hike", "where should we go"]):
+    # 1) 路线相关问题
+    if any(word in lower for word in ["trail", "route", "hike", "where should we go", "去哪", "路线", "哪条"]):
         route = basic_route_recommendation()
         if not route:
             return ChatResponse(
-                reply="I tried to find a route but I do not have any routes in my database yet."
+                reply="I tried to find a route but I don't have any routes in my database yet."
             )
 
-        SESSION_TRIP_STATE[session_id] = TripState(
-            route=route,
-            trip_name=f"Hike to {route.name}",
-            date=None,
-            meet_time=None,
-            meet_point=None,
-            organizer=last_msg.sender,
-            participants=[m.sender for m in recent if m.sender],
-        )
-
-        text = (
-            f"It sounds like you are discussing where to go. I recommend **{route.name}**.\n\n"
+        reply = (
+            "It sounds like you're deciding where to hike.\n\n"
+            f"I recommend **{route.name}** near {route.location}.\n\n"
             f"- Distance: {route.distance_km:.1f} km\n"
             f"- Elevation gain: {route.elevation_gain_m} m\n"
-            f"- Driving time: {route.drive_time_min} minutes one way\n"
+            f"- Driving time: ~{route.drive_time_min} minutes\n"
             f"- Difficulty: {route.difficulty}\n\n"
-            "If you want to go with this one, you can say something like "
-            "\"Let us go with this trail\" and I will generate a full trip announcement."
+            "You can also use the **Weather Snapshot** panel on the right to get a detailed forecast "
+            "for this trail at your planned start time."
         )
-        return ChatResponse(reply=text)
+        return ChatResponse(reply=reply)
 
-    # If people ask about gear explicitly
-    if any(word in merged for word in ["gear", "pack", "bring", "what should i bring"]):
-        # For now, build a generic checklist
-        checklist = build_gear_checklist(
-            GearRequest(season=None, difficulty=None, has_water=None)
+    # 2) 装备 / 打包相关
+    if any(word in lower for word in ["gear", "pack", "bring", "背什么", "带什么", "装备"]):
+        # 简单假设是夏季 5 小时中等难度日间徒步
+        gear_req = GearRequest(
+            season="summer",
+            hours=5,
+            altitude_band="mid",
+            terrain=["dry"],
+            distance_km=10.0,
+            elevation_gain_m=600,
+            group_size=3,
         )
-        text = "Here is a basic gear checklist:\n\n" + "\n".join(
-            f"- {item}" for item in checklist.items
-        )
-        return ChatResponse(reply=text)
+        checklist = build_gear_checklist(gear_req)
+        lines = "\n".join(f"- {item}" for item in checklist.items)
 
-    # Default: bot stays quiet (no reply)
-    return ChatResponse(reply="")
+        reply = (
+            "Here's a basic packing checklist for a typical day hike:\n\n"
+            f"{lines}\n\n"
+            "Always adjust for your specific route, weather, and group experience."
+        )
+        return ChatResponse(reply=reply)
+
+    # 3) 天气相关
+    if any(word in lower for word in ["weather", "forecast", "下雨", "雷电", "风大"]):
+        reply = (
+            "For detailed weather, use the **Weather Snapshot** panel on the right:\n"
+            "1. Pick a route.\n"
+            "2. Choose your start date & time.\n"
+            "3. Click *Get forecast* to see temperature, rain probability, and safety notes.\n"
+        )
+        return ChatResponse(reply=reply)
+
+    # 4) 默认兜底介绍
+    reply = (
+        "I'm HikeBot 🥾. I can help your group with:\n"
+        "- Suggesting a trail (try: *Where should we hike this weekend?*)\n"
+        "- Packing lists (try: *What gear do we need?*)\n"
+        "- Weather safety (try: *How's the weather for hiking?*)\n"
+    )
+    return ChatResponse(reply=reply)
+
     
 
 def get_trip_history_for_user(username: str) -> TripHistoryResponse:
