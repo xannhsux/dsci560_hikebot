@@ -21,6 +21,10 @@ class Route(BaseModel):
     difficulty: Difficulty
     drive_time_min: int = Field(..., description="Approximate driving time from home base")
     tags: List[RouteTag] = []
+    summary: Optional[str] = None
+    gpx_url: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class RouteFilters(BaseModel):
@@ -166,3 +170,29 @@ class TripHistoryEntry(BaseModel):
 class TripHistoryResponse(BaseModel):
     trips: List[TripHistoryEntry]
 
+
+class GroupJoinRequest(BaseModel):
+    route_id: str
+    username: str
+
+
+class GroupMembersResponse(BaseModel):
+    route_id: str
+    members: List[str]
+
+
+class GroupMessage(BaseModel):
+    sender: str
+    content: str
+    timestamp: datetime
+
+
+class GroupChatPost(BaseModel):
+    route_id: str
+    username: str
+    content: str
+
+
+class GroupChatResponse(BaseModel):
+    route_id: str
+    messages: List[GroupMessage]

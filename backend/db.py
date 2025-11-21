@@ -4,27 +4,81 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, time, datetime
 from typing import Dict, List, Optional, Tuple
 
+import weather_service
 from models import (
     AuthResponse,
     ChatMessage,
     ChatRequest,
     ChatResponse,
+    GroupMessage,
     GearChecklist,
     GearRequest,
     Route,
+    RouteListResponse,
     TripHistoryEntry,
     TripHistoryResponse,
-    RouteListResponse,  # 👈 新增
+    WeatherRequest,
+    WeatherSnapshot,
 )
-
+from route_provider import load_routes
 from weather_service import get_weather_snapshot, summarize_weather
-import seed_routes  # assume you already have this
-from models import WeatherRequest, WeatherSnapshot, Route
-import seed_routes
-import weather_service
+
+SEED_MEMBERS = ["Trip Leader", "Alice", "Bob"]
+
+ROUTES: List[Route] = load_routes()
+GROUP_MEMBERS: Dict[str, List[str]] = {
+    route.id: list(SEED_MEMBERS)
+    for route in ROUTES
+}
+
+
+def _get_route(route_id: str) -> Route:
+    route = next((r for r in ROUTES if r.id == route_id), None)
+    if not route:
+        raise ValueError(f"Route {route_id} not found")
+    return route
+
+
+def join_route_group(route_id: str, username: str) -> List[str]:
+    route = _get_route(route_id)
+    normalized = (username or "").strip()
+    if not normalized:
+        raise ValueError("Username is required to join a group.")
+
+    members = GROUP_MEMBERS.setdefault(route.id, [])
+    normalized_key = normalized.lower()
+    if not any(existing.lower() == normalized_key for existing in members):
+        members.append(normalized)
+    return members
+
+
+def leave_route_group(route_id: str, username: str) -> List[str]:
+    route = _get_route(route_id)
+    normalized = (username or "").strip()
+    if not normalized:
+        raise ValueError("Username is required to leave a group.")
+
+    members = GROUP_MEMBERS.setdefault(route.id, [])
+    remaining = [
+        member
+        for member in members
+        if member.lower() != normalized.lower()
+    ]
+    # ensure seed members always present
+    for seed in SEED_MEMBERS:
+        if seed not in remaining:
+            remaining.insert(0, seed)
+    GROUP_MEMBERS[route.id] = remaining
+    return remaining
+
+
+def list_group_members(route_id: str) -> List[str]:
+    _get_route(route_id)
+    return GROUP_MEMBERS.get(route_id, [])
+
 
 def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
     """Return a WeatherSnapshot for the given route id and start time.
@@ -32,20 +86,30 @@ def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
     This is called by the /weather/snapshot endpoint. We look up the route
     from the seed fixtures each time to avoid relying on any global state.
     """
-    # Rebuild routes from the seed data
-    routes = [Route(**route) for route in seed_routes.get_seed_routes()]
-    route = next((r for r in routes if r.id == payload.route_id), None)
-    if route is None:
-        raise ValueError(f"Route {payload.route_id} not found")
+    route = _get_route(payload.route_id)
 
     if route.latitude is None or route.longitude is None:
         raise ValueError(f"Route {payload.route_id} has no latitude/longitude")
 
-    # Delegate to the Open-Meteo helper, which already returns a WeatherSnapshot
-    return weather_service.get_weather_snapshot(
+    record = weather_service.get_weather_snapshot(
         route.latitude,
         route.longitude,
-        payload.start_iso,
+        route.name,
+    )
+
+    if record:
+        try:
+            return summarize_weather(record)
+        except Exception:
+            pass
+
+    # Fallback snapshot when NOAA data is unavailable (e.g., offline dev)
+    return WeatherSnapshot(
+        summary="Weather data unavailable. Assuming mild conditions with light breeze.",
+        temp_c=18.0,
+        precip_prob=0.1,
+        lightning_risk="low",
+        fire_risk="moderate",
     )
 
 
@@ -55,7 +119,7 @@ def weather_snapshot(payload: WeatherRequest) -> WeatherSnapshot:
 USER_STORE: Dict[str, str] = {}  # username -> password hash
 def list_routes() -> RouteListResponse:
     """
-    Return all seed routes as a RouteListResponse.
+    Return the currently loaded routes (Waymarked API or fallback fixtures).
     This is used by the /routes API to feed the frontend.
     """
     return RouteListResponse(routes=ROUTES)
@@ -83,13 +147,8 @@ def authenticate_user(username: str, password: str) -> AuthResponse:
     return AuthResponse(username=username, message="Login successful.")
 
 
-# ---- Routes ----
-
-ROUTES: List[Route] = seed_routes.get_seed_routes()
-
-
 def basic_route_recommendation() -> Optional[Route]:
-    """Very simple route selector: just pick the first seed route."""
+    """Very simple route selector: just pick the first available route."""
     return ROUTES[0] if ROUTES else None
 
 
@@ -107,12 +166,65 @@ class TripState:
 
 
 CHAT_HISTORY: Dict[str, List[ChatMessage]] = {}       # session_id -> messages
+GROUP_CHAT_HISTORY: Dict[str, List[ChatMessage]] = {}
 SESSION_TRIP_STATE: Dict[str, TripState] = {}         # session_id -> TripState
 TRIP_HISTORY: Dict[str, List[TripHistoryEntry]] = {}  # username -> trips
 
 
 def record_chat_message(session_id: str, msg: ChatMessage) -> None:
     CHAT_HISTORY.setdefault(session_id, []).append(msg)
+
+
+def append_group_message(route_id: str, msg: ChatMessage) -> None:
+    GROUP_CHAT_HISTORY.setdefault(route_id, []).append(msg)
+
+
+def get_group_messages(route_id: str, limit: int = 50) -> List[ChatMessage]:
+    history = GROUP_CHAT_HISTORY.setdefault(route_id, _seed_group_history(route_id))
+    return history[-limit:]
+
+
+def _seed_group_history(route_id: str) -> List[ChatMessage]:
+    members = GROUP_MEMBERS.get(route_id, [])
+    if not members:
+        return []
+    msgs: List[ChatMessage] = []
+    for member in members:
+        msgs.append(
+            ChatMessage(
+                username=member,
+                user_message=f"{member} joined the chat.",
+                timestamp=datetime.utcnow(),
+            )
+        )
+    return msgs
+
+
+def get_group_chat(route_id: str) -> List[GroupMessage]:
+    route = _get_route(route_id)
+    messages = get_group_messages(route.id)
+    return [
+        GroupMessage(sender=msg.username, content=msg.user_message, timestamp=msg.timestamp)
+        for msg in messages
+    ]
+
+
+def post_group_chat(route_id: str, username: str, content: str) -> List[GroupMessage]:
+    route = _get_route(route_id)
+    normalized = (username or "").strip()
+    if not normalized:
+        raise ValueError("Username is required.")
+    if not content.strip():
+        raise ValueError("Message cannot be empty.")
+
+    members = GROUP_MEMBERS.setdefault(route.id, [])
+    normalized_key = normalized.lower()
+    if not any(existing.lower() == normalized_key for existing in members):
+        members.append(normalized)
+
+    msg = ChatMessage(username=normalized, user_message=content, timestamp=datetime.utcnow())
+    append_group_message(route.id, msg)
+    return get_group_chat(route.id)
 
 
 def get_recent_human_messages(session_id: str, n: int = 6) -> List[ChatMessage]:
@@ -187,7 +299,10 @@ def generate_announcement_text(session_id: str, username: str) -> str:
         SESSION_TRIP_STATE[session_id] = state
 
     route = state.route
-    weather_record = get_weather_snapshot(route.lat, route.lon, route.name)
+    if route.latitude is not None and route.longitude is not None:
+        weather_record = get_weather_snapshot(route.latitude, route.longitude, route.name)
+    else:
+        weather_record = None
     weather_summary = summarize_weather(weather_record) if weather_record else None
 
     trip_date_str = state.date.isoformat() if state.date else "[Date not set]"
@@ -215,7 +330,7 @@ Participants (so far): {", ".join(state.participants) if state.participants else
 - Difficulty: {route.difficulty}
 
 Short description:
-> {route.description or "No detailed description available yet."}
+> {route.summary or "No detailed description available yet."}
 """
 
     if weather_summary:
@@ -226,10 +341,10 @@ Short description:
 ### 🌤 Weather (NOAA-based snapshot)
 
 - Temperature: {weather_summary.temp_c:.1f}°C
-- Precipitation probability: {weather_summary.precip_probability * 100:.0f}%
+- Precipitation probability: {weather_summary.precip_prob * 100:.0f}%
 - Lightning risk: {weather_summary.lightning_risk}
 - Fire risk: {weather_summary.fire_risk}
-- Advisory: {weather_summary.advisory}
+- Advisory: {weather_summary.summary}
 """
 
     if weather_record:
@@ -291,21 +406,25 @@ def handle_chat(req: ChatRequest) -> ChatResponse:
 
     # 1) 路线相关问题
     if any(word in lower for word in ["trail", "route", "hike", "where should we go", "去哪", "路线", "哪条"]):
-        route = basic_route_recommendation()
-        if not route:
+        recommendations = ROUTES[:3]
+        if not recommendations:
             return ChatResponse(
                 reply="I tried to find a route but I don't have any routes in my database yet."
             )
 
+        bullets = []
+        for idx, route in enumerate(recommendations, start=1):
+            bullets.append(
+                f"{idx}. **{route.name}** near {route.location}\n"
+                f"   - {route.distance_km:.1f} km / {route.elevation_gain_m} m gain / {route.difficulty} difficulty\n"
+                f"   - Drive time ≈ {route.drive_time_min} minutes\n"
+                f"   - Group ID: `{route.id}`"
+            )
+
         reply = (
-            "It sounds like you're deciding where to hike.\n\n"
-            f"I recommend **{route.name}** near {route.location}.\n\n"
-            f"- Distance: {route.distance_km:.1f} km\n"
-            f"- Elevation gain: {route.elevation_gain_m} m\n"
-            f"- Driving time: ~{route.drive_time_min} minutes\n"
-            f"- Difficulty: {route.difficulty}\n\n"
-            "You can also use the **Weather Snapshot** panel on the right to get a detailed forecast "
-            "for this trail at your planned start time."
+            "Here are a few trails you might like:\n\n"
+            + "\n\n".join(bullets)
+            + "\n\nUse the **Trail Groups** panel or the buttons below the chat to join the group for a trail you like."
         )
         return ChatResponse(reply=reply)
 

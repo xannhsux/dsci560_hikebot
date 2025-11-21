@@ -27,13 +27,16 @@ def summarize_weather(record: Dict[str, Any]) -> WeatherSnapshot:
     Convert the raw NOAA record into a compact WeatherSnapshot schema.
     """
     temp_f = record.get("temperature")
-    # crude conversion to Celsius if needed
-    if record.get("temperature_unit") == "F" and temp_f is not None:
+    temp_c: float
+    if temp_f is None:
+        temp_c = 20.0
+    elif record.get("temperature_unit") == "F":
         temp_c = (temp_f - 32) * 5.0 / 9.0
     else:
         temp_c = float(temp_f)
 
-    precip_field = record.get("precipitation_chance", "0%").replace("%", "")
+    precip_value = record.get("precipitation_chance", "0%")
+    precip_field = str(precip_value).replace("%", "")
     try:
         precip_probability = float(precip_field) / 100.0
     except Exception:
@@ -56,7 +59,7 @@ def summarize_weather(record: Dict[str, Any]) -> WeatherSnapshot:
     else:
         fire_risk = "low"
 
-        summary = (
+    summary = (
         f"Temperature around {temp_c:.1f}°C, "
         f"precipitation chance {precip_probability * 100:.0f}%. "
         f"Conditions: {record.get('short_forecast', 'Unknown')}."
@@ -70,4 +73,3 @@ def summarize_weather(record: Dict[str, Any]) -> WeatherSnapshot:
         lightning_risk=lightning_risk,  # type: ignore[arg-type]
         fire_risk=fire_risk,            # type: ignore[arg-type]
     )
-

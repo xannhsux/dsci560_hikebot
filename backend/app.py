@@ -7,29 +7,42 @@ from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware  # 👈 加这一行
+from pathlib import Path
 
 from models import (
     AuthResponse,
     ChatRequest,
     ChatResponse,
+    GroupChatPost,
+    GroupChatResponse,
+    GroupJoinRequest,
+    GroupMembersResponse,
+    RouteListResponse,
     TripHistoryResponse,
     UserLogin,
     UserSignup,
-    RouteListResponse,
     WeatherRequest,
     WeatherSnapshot,
 )
 import db
 from db import (
     authenticate_user,
+    get_group_chat,
     get_trip_history_for_user,
     handle_chat,
-    signup_user,
+    join_route_group,
+    leave_route_group,
+    list_group_members,
     list_routes,
+    post_group_chat,
+    signup_user,
 )
 
+BASE_DIR = Path(__file__).parent
+STATIC_DIR = BASE_DIR / "static"
+
 app = FastAPI(title="HikeBot Backend")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 
@@ -182,6 +195,51 @@ def user_trips(username: str) -> TripHistoryResponse:
     return get_trip_history_for_user(username)
 
 
+@app.post("/groups/join", response_model=GroupMembersResponse)
+def join_group(payload: GroupJoinRequest) -> GroupMembersResponse:
+    try:
+        members = join_route_group(payload.route_id, payload.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return GroupMembersResponse(route_id=payload.route_id, members=members)
+
+
+@app.post("/groups/leave", response_model=GroupMembersResponse)
+def leave_group(payload: GroupJoinRequest) -> GroupMembersResponse:
+    try:
+        members = leave_route_group(payload.route_id, payload.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return GroupMembersResponse(route_id=payload.route_id, members=members)
+
+
+@app.get("/groups/{route_id}/members", response_model=GroupMembersResponse)
+def group_members(route_id: str) -> GroupMembersResponse:
+    try:
+        members = list_group_members(route_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return GroupMembersResponse(route_id=route_id, members=members)
+
+
+@app.get("/groups/{route_id}/messages", response_model=GroupChatResponse)
+def group_messages(route_id: str) -> GroupChatResponse:
+    try:
+        messages = get_group_chat(route_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return GroupChatResponse(route_id=route_id, messages=messages)
+
+
+@app.post("/groups/message", response_model=GroupChatResponse)
+def post_group_message(payload: GroupChatPost) -> GroupChatResponse:
+    try:
+        messages = post_group_chat(payload.route_id, payload.username, payload.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return GroupChatResponse(route_id=payload.route_id, messages=messages)
+
+
 from models import WeatherRequest, WeatherSnapshot
 import db
 
@@ -200,11 +258,9 @@ def weather_snapshot_endpoint(payload: WeatherRequest) -> WeatherSnapshot:
         # 找不到路线 / 天气拿不到
         raise HTTPException(status_code=404, detail=str(exc))
     
-from fastapi.responses import HTMLResponse
-from pathlib import Path
-
 @app.get("/demo-chat", response_class=HTMLResponse)
 async def demo_chat():
-    html_path = Path(__file__).parent / "chat.html"
+    html_path = STATIC_DIR / "chat.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Chat demo asset missing.")
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
-

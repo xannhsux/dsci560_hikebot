@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from html import escape
+from textwrap import dedent
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -19,13 +21,9 @@ def init_state() -> None:
     if "user" not in st.session_state:
         st.session_state.user = None
 
-    # 群成员列表（前端用，模拟微信群聊）
-    if "members" not in st.session_state:
-        st.session_state.members = ["Trip leader", "Alice", "Bob", "HikeBot"]
-
-    # 当前这台设备“扮演”的成员（决定气泡在左还是右）
+    # 当前登录用户（决定聊天气泡位置）
     if "current_user" not in st.session_state:
-        st.session_state.current_user = "Trip leader"
+        st.session_state.current_user = None
 
     # 聊天记录：可以同时兼容旧结构和新结构
     # 新结构：{"sender", "role", "content", "timestamp"}
@@ -38,6 +36,15 @@ def init_state() -> None:
                 "timestamp": datetime.utcnow().isoformat(),
             }
         ]
+
+    if "group_members" not in st.session_state:
+        st.session_state.group_members: Dict[str, List[str]] = {}
+
+    if "active_group_route" not in st.session_state:
+        st.session_state.active_group_route: Optional[str] = None
+
+    if "view_mode" not in st.session_state:
+        st.session_state.view_mode = "home"
 
 
 # --------- 调用后端的函数 ---------
@@ -60,14 +67,6 @@ def auth_request(endpoint: str, username: str, password: str) -> str:
     return response.json().get("message", "Success.")
 
 
-def fetch_trip_history(username: str) -> List[Dict[str, Any]]:
-    response = requests.get(f"{BACKEND_URL}/users/{username}/trips", timeout=15)
-    if response.status_code == 404:
-        return []
-    response.raise_for_status()
-    return response.json().get("trips", [])
-
-
 @st.cache_data(ttl=600)
 def fetch_routes() -> List[Dict[str, Any]]:
     response = requests.get(f"{BACKEND_URL}/routes", timeout=15)
@@ -80,6 +79,90 @@ def request_weather(route_id: str, when: datetime) -> Dict[str, Any]:
     response = requests.post(f"{BACKEND_URL}/weather/snapshot", json=payload, timeout=20)
     response.raise_for_status()
     return response.json()
+
+
+def join_route_group(route_id: str, username: str) -> List[str]:
+    payload = {"route_id": route_id, "username": username}
+    response = requests.post(f"{BACKEND_URL}/groups/join", json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json().get("members", [])
+
+
+def leave_route_group_request(route_id: str, username: str) -> List[str]:
+    payload = {"route_id": route_id, "username": username}
+    response = requests.post(f"{BACKEND_URL}/groups/leave", json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json().get("members", [])
+
+
+def fetch_group_members(route_id: str) -> List[str]:
+    response = requests.get(f"{BACKEND_URL}/groups/{route_id}/members", timeout=15)
+    response.raise_for_status()
+    return response.json().get("members", [])
+
+
+def fetch_group_messages(route_id: str) -> List[Dict[str, Any]]:
+    response = requests.get(f"{BACKEND_URL}/groups/{route_id}/messages", timeout=15)
+    response.raise_for_status()
+    return response.json().get("messages", [])
+
+
+def send_group_message(route_id: str, username: str, content: str) -> List[Dict[str, Any]]:
+    payload = {"route_id": route_id, "username": username, "content": content}
+    response = requests.post(f"{BACKEND_URL}/groups/message", json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json().get("messages", [])
+
+
+def get_cached_members(route_id: str) -> List[str]:
+    if not route_id:
+        return []
+    if route_id not in st.session_state.group_members:
+        try:
+            members = fetch_group_members(route_id)
+        except requests.RequestException:
+            members = []
+        st.session_state.group_members[route_id] = members
+    return st.session_state.group_members[route_id]
+
+
+def handle_join_route(route_id: str, username: str) -> bool:
+    if not username:
+        st.warning("Please log in to join a group.")
+        return False
+    try:
+        members = join_route_group(route_id, username)
+    except requests.RequestException as exc:
+        st.error(f"Unable to join group: {exc}")
+        return False
+    st.session_state.group_members[route_id] = members
+    st.session_state.active_group_route = route_id
+    st.session_state.view_mode = "group"
+    return True
+
+
+def handle_leave_route(route_id: str, username: str) -> bool:
+    if not username:
+        st.warning("Please log in to manage groups.")
+        return False
+    try:
+        members = leave_route_group_request(route_id, username)
+    except requests.RequestException as exc:
+        st.error(f"Unable to leave group: {exc}")
+        return False
+    st.session_state.group_members[route_id] = members
+    if st.session_state.active_group_route == route_id:
+        st.session_state.view_mode = "home"
+    return True
+
+
+def user_in_group(route_id: Optional[str], username: Optional[str]) -> bool:
+    if not route_id or not username:
+        return False
+    members = st.session_state.group_members.get(route_id)
+    if members is None:
+        members = get_cached_members(route_id)
+    return any(member.lower() == username.lower() for member in members)
 
 
 # --------- 认证 UI（基本不变，只加了一行 current_user） ---------
@@ -124,74 +207,63 @@ def render_auth_gate() -> bool:
 
 # --------- Sidebar：行程历史 + Logout（原样保留） ---------
 
-def render_sidebar(username: str) -> None:
+def render_sidebar(username: str, routes: List[Dict[str, Any]]) -> None:
     with st.sidebar:
-        st.header("Trip History")
-        try:
-            trips = fetch_trip_history(username)
-        except requests.RequestException as exc:
-            st.error(f"Unable to load history: {exc}")
-            trips = []
-
-        if trips:
-            for trip in trips:
-                status = trip.get("status", "planned")
-                label = f"{trip.get('trip_name', 'Trip')} • {trip.get('date', '')}"
-                st.markdown(
-                    f"- **{label}**  \n  Role: {trip.get('role')} · {status.title()}"
-                )
+        st.header("Trail Groups")
+        if not routes:
+            st.caption("No trail data yet. Ask HikeBot for recommendations first.")
         else:
-            st.caption("No hiking history yet.")
+            if not st.session_state.active_group_route:
+                st.session_state.active_group_route = routes[0]["id"]
 
+            options = {f"{r['name']} — {r.get('location', '')}": r["id"] for r in routes}
+            labels = list(options.keys())
+            current_route = st.session_state.active_group_route
+            try:
+                current_index = list(options.values()).index(current_route)
+            except ValueError:
+                current_index = 0
+
+            label = st.selectbox(
+                "Choose a trail", labels, index=current_index, key="sidebar_group_select"
+            )
+            selected_route = options[label]
+            if selected_route != st.session_state.active_group_route:
+                st.session_state.active_group_route = selected_route
+
+            route = next((r for r in routes if r["id"] == selected_route), None)
+            if route:
+                st.caption(
+                    f"{route['distance_km']} km · {route['elevation_gain_m']} m gain · "
+                    f"{route['difficulty'].title()} · ~{route['drive_time_min']} min drive"
+                )
+                st.write(route.get("summary", ""))
+
+            joined = user_in_group(selected_route, username)
+            if joined:
+                if st.button("Quit this group", key=f"sidebar-leave-{selected_route}"):
+                    if handle_leave_route(selected_route, username):
+                        st.success("You left this group.")
+            else:
+                if st.button("Join this group", key=f"sidebar-join-{selected_route}"):
+                    if handle_join_route(selected_route, username):
+                        st.success("You're in! Check the member list below.")
+
+            members = get_cached_members(selected_route)
+            st.markdown("**Members**")
+            if members:
+                for member in members:
+                    st.markdown(f"- {member}")
+            else:
+                st.caption("No one has joined this group yet.")
+
+        st.markdown("---")
         if st.button("Log out"):
             st.session_state.pop("user", None)
             st.rerun()
 
 
 # --------- Weather 工具（挪到右侧列用） ---------
-
-def render_weather_tool() -> None:
-    st.subheader("Weather Snapshot")
-    routes = fetch_routes()
-    if not routes:
-        st.warning("No routes available to check weather.")
-        return
-
-    options = {f"{r['name']} — {r.get('location', '')}": r["id"] for r in routes}
-    labels = list(options.keys())
-    default_index = 0
-    selected_label = st.selectbox("Choose a route", labels, index=default_index)
-    selected_route = options[selected_label]
-
-    default_time = datetime.utcnow().replace(microsecond=0)
-    date_val = st.date_input(
-        "Start date", value=default_time.date(), key="weather_date"
-    )
-    time_val = st.time_input(
-        "Start time", value=default_time.time(), key="weather_time"
-    )
-    target = datetime.combine(date_val, time_val)
-
-    if st.button("Get forecast", key="weather_button"):
-        try:
-            data = request_weather(selected_route, target)
-        except requests.RequestException as exc:
-            st.error(f"Unable to fetch weather: {exc}")
-            return
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Temperature (°C)", data.get("temp_c"))
-        with col2:
-            prob = data.get("precip_probability", 0)
-            st.metric("Precip probability", f"{prob*100:.0f}%")
-        st.write(
-            f"Lightning risk: **{data.get('lightning_risk', 'low').title()}**, "
-            f"Fire risk: **{data.get('fire_risk', 'low').title()}**"
-        )
-        st.info(data.get("advisory", ""))
-
-
-# --------- 新的群聊消息气泡（微信 / Discord 风格） ---------
 
 def render_message_bubble(msg: Dict[str, Any]) -> None:
     # 兼容旧结构
@@ -219,12 +291,16 @@ def render_message_bubble(msg: Dict[str, Any]) -> None:
         except Exception:
             time_str = str(ts)
 
-    st.markdown(
+    safe_sender = escape(sender)
+    safe_time = escape(time_str)
+    safe_content = escape(content).replace("\n", "<br>")
+
+    bubble_html = dedent(
         f"""
         <div style="display: flex; justify-content: {align}; margin-bottom: 8px;">
           <div style="max-width: 75%; display: flex; flex-direction: column; align-items: {text_align};">
             <div style="font-size: 12px; color: #888888; margin-bottom: 2px;">
-              {sender} · {time_str}
+              {safe_sender} · {safe_time}
             </div>
             <div style="
               background-color: {bubble_color};
@@ -236,16 +312,93 @@ def render_message_bubble(msg: Dict[str, Any]) -> None:
               white-space: pre-wrap;
               text-align: left;
             ">
-              {content}
+              {safe_content}
             </div>
           </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    ).strip()
+
+    st.markdown(bubble_html, unsafe_allow_html=True)
 
 
-# --------- 主入口：改成多列布局的群聊 UI ---------
+# --------- 主入口：群聊 UI ---------
+
+def render_home_chat(user: str) -> None:
+    st.subheader("AI Planning Chat")
+    chat_container = st.container()
+    with chat_container:
+        if not st.session_state.messages:
+            st.caption("No messages yet. Start the conversation!")
+        else:
+            for msg in st.session_state.messages:
+                render_message_bubble(msg)
+
+    prompt = st.chat_input("Ask about hikes, gear, weather, or safety…", key="home_chat_input")
+    if prompt:
+        now_str = datetime.utcnow().isoformat()
+        st.session_state.messages.append(
+            {
+                "sender": st.session_state.current_user,
+                "role": "user",
+                "content": prompt,
+                "timestamp": now_str,
+            }
+        )
+        try:
+            reply = send_message(prompt)
+        except requests.RequestException as exc:
+            reply = f"⚠️ Unable to reach backend: {exc}"
+
+        st.session_state.messages.append(
+            {
+                "sender": "HikeBot",
+                "role": "assistant",
+                "content": reply,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+        st.rerun()
+
+
+def render_group_chat(user: str, routes: List[Dict[str, Any]]) -> None:
+    route_id = st.session_state.active_group_route
+    if not route_id:
+        st.warning("Join a trail group from the sidebar to start chatting.")
+        return
+
+    route = next((r for r in routes if r["id"] == route_id), None)
+    title = route["name"] if route else route_id
+    st.subheader(f"{title} · Group Chat")
+    if st.button("← Back to AI home", key="back_home"):
+        st.session_state.view_mode = "home"
+        st.rerun()
+
+    try:
+        messages = fetch_group_messages(route_id)
+    except requests.RequestException as exc:
+        st.error(f"Unable to load group chat: {exc}")
+        return
+
+    for msg in messages:
+        render_message_bubble(
+            {
+                "sender": msg.get("sender"),
+                "role": "user",
+                "content": msg.get("content", ""),
+                "timestamp": msg.get("timestamp"),
+            }
+        )
+
+    group_input = st.chat_input("Share an update with the group…", key="group_chat_input")
+    if group_input:
+        try:
+            send_group_message(route_id, user, group_input)
+        except requests.RequestException as exc:
+            st.error(f"Unable to send message: {exc}")
+            return
+        st.rerun()
+
 
 def main() -> None:
     st.set_page_config(page_title="HikeBot Chat", page_icon="🥾", layout="wide")
@@ -259,80 +412,28 @@ def main() -> None:
         render_auth_gate()
         return
 
-    # 确保登录用户在成员列表里
-    if user not in st.session_state.members:
-        st.session_state.members.insert(0, user)
+    st.session_state.current_user = user
 
-    render_sidebar(user)
+    routes = fetch_routes()
+    render_sidebar(user, routes)
     st.info(f"Logged in as {user}")
 
-    # 三列：左 -> 群成员；中 -> 聊天；右 -> Weather 工具
-    col_left, col_center, col_right = st.columns([1.0, 2.4, 1.6])
+    if routes and not st.session_state.active_group_route:
+        st.session_state.active_group_route = routes[0]["id"]
 
-    # 左侧：成员列表 + 当前扮演身份
-    with col_left:
-        st.subheader("Group Members")
-        st.session_state.current_user = st.selectbox(
-            "Send as… (for demo, local only)",
-            options=st.session_state.members,
-            index=st.session_state.members.index(st.session_state.current_user)
-            if st.session_state.current_user in st.session_state.members
-            else 0,
-        )
-        st.markdown("---")
-        for m in st.session_state.members:
-            if m == st.session_state.current_user:
-                st.markdown(f"✅ **{m}**  _(current sender)_")
-            else:
-                st.markdown(f"- {m}")
-
-    # 中间：群聊消息气泡 + 输入框
-    with col_center:
-        st.subheader("Group Chat")
-
-        chat_container = st.container()
-        with chat_container:
-            if not st.session_state.messages:
-                st.caption("No messages yet. Start the conversation!")
-            else:
-                for msg in st.session_state.messages:
-                    render_message_bubble(msg)
-
-        # 聊天输入（底部）
-        prompt = st.chat_input("Ask about hikes, gear, weather, or safety…")
-        if prompt:
-            now_str = datetime.utcnow().isoformat()
-
-            # 当前扮演成员先发一条消息（前端用）
-            st.session_state.messages.append(
-                {
-                    "sender": st.session_state.current_user,
-                    "role": "user",
-                    "content": prompt,
-                    "timestamp": now_str,
-                }
-            )
-
-            # 把内容发给 backend，让 HikeBot 回应
-            try:
-                reply = send_message(prompt)
-            except requests.RequestException as exc:
-                reply = f"⚠️ Unable to reach backend: {exc}"
-
-            st.session_state.messages.append(
-                {
-                    "sender": "HikeBot",
-                    "role": "assistant",
-                    "content": reply,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-            )
-
+    if (
+        st.session_state.view_mode == "home"
+        and st.session_state.active_group_route
+        and user_in_group(st.session_state.active_group_route, user)
+    ):
+        if st.button("Go to current trail group", key="jump_to_group"):
+            st.session_state.view_mode = "group"
             st.rerun()
 
-    # 右侧：Weather 工具
-    with col_right:
-        render_weather_tool()
+    if st.session_state.view_mode == "group":
+        render_group_chat(user, routes)
+    else:
+        render_home_chat(user)
 
 
 if __name__ == "__main__":
