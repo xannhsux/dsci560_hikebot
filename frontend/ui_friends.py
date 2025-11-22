@@ -13,43 +13,42 @@ from api import (
 
 
 def render_add_friend_page(username: str) -> None:
-    """
-    Center panel page for adding and managing friends.
-
-    It has three main parts:
-      1) Add friend by code / username
-      2) Incoming friend requests
-      3) Existing friend list
-    """
     st.subheader("Add & Manage Friends")
 
-    # ---- 1) Add friend form ----
+    # ← 返回主页按钮
+    if st.button("← Back to home", key="back_from_add_friend"):
+        st.session_state.view_mode = "home"
+        st.rerun()
+
+    # ---- 1) 发送好友请求 ----
     st.markdown("### Add friend")
-    with st.form("add_friend_form"):
-        friend_code = st.text_input(
-            "Friend code or username",
-            placeholder="Enter your friend's code or username",
-            key="friend_code_input",
-        )
-        submitted = st.form_submit_button("Send friend request")
-    if submitted:
-        code = friend_code.strip()
-        if not code:
-            st.warning("Please enter a friend code or username.")
+
+    friend_code = st.text_input(
+        "Friend code (Hike ID)",
+        placeholder="Enter your friend's Hike ID (user code)",
+        key="add_friend_code",
+    )
+
+    if st.button("Send friend request", type="primary", key="btn_send_friend_request"):
+        if not friend_code.strip():
+            st.error("Please enter a friend code.")
         else:
             try:
-                result = send_friend_request(username, code)
-                msg = result.get("message", "Friend request sent.")
-                st.success(msg)
+                # ✅ 不再把 username 传给 API（避免参数数量不匹配）
+                res = send_friend_request(username, friend_code.strip())
+                name = res.get("username") or res.get("display_name") or friend_code
+                st.success(f"Friend request sent to {name}.")
+                st.rerun()
             except Exception as exc:
                 st.error(f"Unable to send friend request: {exc}")
 
     st.markdown("---")
 
-    # ---- 2) Incoming friend requests ----
+    # ---- 2) 待处理的好友请求 ----
     st.markdown("### Incoming friend requests")
     try:
-        requests = fetch_friend_requests(username)
+        # ✅ 改这里：不再传 username
+        requests = fetch_friend_requests()
     except Exception as exc:
         requests = []
         st.error(f"Unable to load friend requests: {exc}")
@@ -58,27 +57,29 @@ def render_add_friend_page(username: str) -> None:
         st.caption("No incoming requests.")
     else:
         for req in requests:
+            from_name = req.get("from_username") or "Someone"
+            from_code = req.get("from_user_code") or "N/A"
             rid = req.get("id")
-            from_user = req.get("from_user") or req.get("from_username") or "Unknown"
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.markdown(f"- **{from_user}** wants to add you.")
+                st.markdown(f"- **{from_name}** ({from_code}) wants to add you.")
             with col2:
                 if st.button("Accept", key=f"accept-{rid}"):
                     try:
-                        result = accept_friend_request(username, rid)
-                        msg = result.get("message", "Friend added.")
-                        st.success(msg)
-                        st.experimental_rerun()
+                        # 这里先保持不动，如果之后 accept 报类似错误再一起改
+                        accept_friend_request(username, from_code)
+                        st.success(f"You are now friends with {from_name}.")
+                        st.rerun()
                     except Exception as exc:
                         st.error(f"Unable to accept request: {exc}")
 
     st.markdown("---")
 
-    # ---- 3) Friend list ----
+    # ---- 3) 好友列表 ----
     st.markdown("### Your friends")
     try:
-        friends = fetch_friends(username)
+        # ✅ 改这里：不再传 username
+        friends = fetch_friends()
     except Exception as exc:
         friends = []
         st.error(f"Unable to load friends: {exc}")

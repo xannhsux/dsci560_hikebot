@@ -1,19 +1,20 @@
 """FastAPI backend for the HikeBot group chat experience."""
 
-from fastapi import FastAPI, HTTPException, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from typing import Dict
 import json
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware  # 👈 加这一行
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from uuid import UUID
+
 from auth_router import router as auth_router
 from social_router import router as social_router
-from uuid import UUID
+
 from pg_db import fetch_one, fetch_one_returning
 from models import AuthUser
-
 
 from models import (
     AuthResponse,
@@ -25,11 +26,10 @@ from models import (
     GroupMembersResponse,
     RouteListResponse,
     TripHistoryResponse,
-    UserLogin,
-    UserSignup,
     WeatherRequest,
     WeatherSnapshot,
 )
+
 import db
 from db import (
     authenticate_user,
@@ -41,7 +41,6 @@ from db import (
     list_group_members,
     list_routes,
     post_group_chat,
-    signup_user,
 )
 
 BASE_DIR = Path(__file__).parent
@@ -50,13 +49,16 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title="HikeBot Backend")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-
+# 挂载子路由
 app.include_router(auth_router)
-app.include_router(social_router)
 
 
 
-class ConnectionManager:
+# ==================== 全局聊天室 WebSocket（/ws/chat/{username}） ====================
+
+class ChatConnectionManager:
+    """简单的全局聊天室：所有在线用户一个房间"""
+
     def __init__(self) -> None:
         # username -> WebSocket
         self.active_connections: Dict[str, WebSocket] = {}
@@ -79,8 +81,7 @@ class ConnectionManager:
                 continue
 
 
-manager = ConnectionManager()
-
+chat_manager = ChatConnectionManager()
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,26 +91,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------- Auth --------
-
-@app.post("/auth/signup", response_model=AuthResponse)
-def signup(payload: UserSignup) -> AuthResponse:
-    try:
-        return signup_user(payload.username, payload.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/auth/login", response_model=AuthResponse)
-def login(payload: UserLogin) -> AuthResponse:
-    try:
-        return authenticate_user(payload.username, payload.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
-
 
 # -------- Chat --------
-
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
@@ -122,12 +105,12 @@ def chat(req: ChatRequest) -> ChatResponse:
 @app.websocket("/ws/chat/{username}")
 async def websocket_chat(websocket: WebSocket, username: str):
     """
-    WebSocket 群聊端点：
+    WebSocket 群聊端点（全局大厅）：
     - 浏览器用 ws://localhost:8000/ws/chat/<username> 连接
     - 任意一个人发消息 -> 群里所有人都能看到
     - 同时调用 handle_chat，让 HikeBot 在群里回复
     """
-    await manager.connect(websocket, username)
+    await chat_manager.connect(websocket, username)
     try:
         # 告知其他人：某用户加入
         join_msg = {
@@ -136,7 +119,7 @@ async def websocket_chat(websocket: WebSocket, username: str):
             "content": f"{username} joined the chat.",
             "timestamp": datetime.utcnow().isoformat(),
         }
-        await manager.broadcast_json(join_msg)
+        await chat_manager.broadcast_json(join_msg)
 
         while True:
             # 等待前端发来的文本消息（纯文本）
@@ -149,7 +132,7 @@ async def websocket_chat(websocket: WebSocket, username: str):
                 "content": text,
                 "timestamp": datetime.utcnow().isoformat(),
             }
-            await manager.broadcast_json(user_msg)
+            await chat_manager.broadcast_json(user_msg)
 
             # 2）调用已有的 handle_chat，让 HikeBot 在群里也回复
             try:
@@ -161,7 +144,7 @@ async def websocket_chat(websocket: WebSocket, username: str):
                     "content": chat_resp.reply,
                     "timestamp": datetime.utcnow().isoformat(),
                 }
-                await manager.broadcast_json(bot_msg)
+                await chat_manager.broadcast_json(bot_msg)
             except Exception as exc:
                 error_msg = {
                     "sender": "system",
@@ -169,21 +152,20 @@ async def websocket_chat(websocket: WebSocket, username: str):
                     "content": f"Error from HikeBot: {exc}",
                     "timestamp": datetime.utcnow().isoformat(),
                 }
-                await manager.broadcast_json(error_msg)
+                await chat_manager.broadcast_json(error_msg)
 
     except WebSocketDisconnect:
-        manager.disconnect(username)
+        chat_manager.disconnect(username)
         leave_msg = {
             "sender": "system",
             "role": "system",
             "content": f"{username} left the chat.",
             "timestamp": datetime.utcnow().isoformat(),
         }
-        await manager.broadcast_json(leave_msg)
+        await chat_manager.broadcast_json(leave_msg)
 
 
-
-# -------- Routes & trip history --------
+# ==================== Routes & trip history ====================
 
 @app.get("/routes", response_model=RouteListResponse)
 def get_routes() -> RouteListResponse:
@@ -250,8 +232,7 @@ def post_group_message(payload: GroupChatPost) -> GroupChatResponse:
     return GroupChatResponse(route_id=payload.route_id, messages=messages)
 
 
-from models import WeatherRequest, WeatherSnapshot
-import db
+# ==================== Weather ====================
 
 @app.post("/weather/snapshot", response_model=WeatherSnapshot)
 def weather_snapshot_endpoint(payload: WeatherRequest) -> WeatherSnapshot:
@@ -267,7 +248,10 @@ def weather_snapshot_endpoint(payload: WeatherRequest) -> WeatherSnapshot:
     except ValueError as exc:
         # 找不到路线 / 天气拿不到
         raise HTTPException(status_code=404, detail=str(exc))
-    
+
+
+# ==================== Demo chat HTML ====================
+
 @app.get("/demo-chat", response_class=HTMLResponse)
 async def demo_chat():
     html_path = STATIC_DIR / "chat.html"
@@ -276,7 +260,9 @@ async def demo_chat():
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-class ConnectionManager:
+# ==================== 群聊 WebSocket（按 group 分房间） ====================
+
+class GroupConnectionManager:
     """按 group_id 管理 WebSocket 连接"""
 
     def __init__(self) -> None:
@@ -295,7 +281,6 @@ class ConnectionManager:
                 del self.rooms[group_id]
 
     async def broadcast_json(self, group_id: str, message: dict):
-        import json
         data = json.dumps(message)
         room = self.rooms.get(group_id)
         if not room:
@@ -310,7 +295,7 @@ class ConnectionManager:
             self.disconnect(group_id, uid)
 
 
-manager = ConnectionManager()
+group_manager = GroupConnectionManager()
 
 
 async def _get_user_for_ws(username: str, user_code: str) -> AuthUser | None:
@@ -357,7 +342,7 @@ async def group_ws(
         return
 
     # 3) 正式加入房间
-    await manager.connect(group_id, user.id, websocket)
+    await group_manager.connect(group_id, user.id, websocket)
 
     try:
         while True:
@@ -388,7 +373,7 @@ async def group_ws(
             }
 
             # 只在当前 group 内广播
-            await manager.broadcast_json(group_id, msg)
+            await group_manager.broadcast_json(group_id, msg)
 
     except WebSocketDisconnect:
-        manager.disconnect(group_id, user.id)
+        group_manager.disconnect(group_id, user.id)

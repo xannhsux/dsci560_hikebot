@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import List, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+
+# -------------------------------------------------------------------
+# Routes & route recommendations
+# -------------------------------------------------------------------
 
 Difficulty = Literal["easy", "moderate", "hard"]
 RouteTag = Literal["dog_friendly", "camping", "water_source", "loop", "summit"]
@@ -51,6 +56,10 @@ class RouteListResponse(BaseModel):
     routes: List[Route]
 
 
+# -------------------------------------------------------------------
+# Gear checklist
+# -------------------------------------------------------------------
+
 class GearRequest(BaseModel):
     season: Literal["spring", "summer", "fall", "winter"]
     hours: float = Field(..., gt=0, description="Planned moving time in hours")
@@ -67,6 +76,10 @@ class GearChecklist(BaseModel):
     calories_kcal: int
     notes: Optional[str] = None
 
+
+# -------------------------------------------------------------------
+# Weather
+# -------------------------------------------------------------------
 
 class WeatherRequest(BaseModel):
     """Weather request payload used by the /weather/snapshot endpoint.
@@ -91,6 +104,10 @@ class WeatherSnapshot(BaseModel):
     fire_risk: Literal["low", "moderate", "high"]
 
 
+# -------------------------------------------------------------------
+# SOS card
+# -------------------------------------------------------------------
+
 class SOSRequest(BaseModel):
     event_id: Optional[str] = None
     route_id: Optional[str] = None
@@ -105,6 +122,10 @@ class SOSCard(BaseModel):
     last_check_in: Optional[datetime] = None
     countdown_minutes: Optional[int] = None
 
+
+# -------------------------------------------------------------------
+# Events / trips (for future carpool / meetup features)
+# -------------------------------------------------------------------
 
 class EventRequest(BaseModel):
     username: str
@@ -128,6 +149,10 @@ class EventCard(BaseModel):
     summary: str
 
 
+# -------------------------------------------------------------------
+# Planning chat (LLM)
+# -------------------------------------------------------------------
+
 class ChatRequest(BaseModel):
     user_message: str
     filters: Optional[RouteFilters] = None
@@ -143,22 +168,34 @@ class ChatMessage(BaseModel):
     timestamp: datetime
 
 
+# -------------------------------------------------------------------
+# Auth & users (Postgres-backed)
+# -------------------------------------------------------------------
 
-
-class UserSignup(BaseModel):
+class SignupRequest(BaseModel):
     username: str
     password: str
 
 
-class UserLogin(BaseModel):
+class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class AuthUser(BaseModel):
+    id: int
+    username: str
+    user_code: str
 
 
 class AuthResponse(BaseModel):
-    username: str
+    user: AuthUser
     message: str
 
+
+# -------------------------------------------------------------------
+# Trip history (for UI sidebar)
+# -------------------------------------------------------------------
 
 class TripHistoryEntry(BaseModel):
     trip_name: str
@@ -170,6 +207,10 @@ class TripHistoryEntry(BaseModel):
 class TripHistoryResponse(BaseModel):
     trips: List[TripHistoryEntry]
 
+
+# -------------------------------------------------------------------
+# 老版本：按 route_id 的临时群聊（in-memory db.py 用）
+# -------------------------------------------------------------------
 
 class GroupJoinRequest(BaseModel):
     route_id: str
@@ -196,38 +237,14 @@ class GroupChatPost(BaseModel):
 class GroupChatResponse(BaseModel):
     route_id: str
     messages: List[GroupMessage]
-# backend/models.py 中追加
-
-from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import Optional, List
-from uuid import UUID
 
 
-class SignupRequest(BaseModel):
-    username: str
-    password: str
-    user_code: str   
-
-
-class AuthUser(BaseModel):
-    id: int
-    username: str
-    user_code: str
-
-
-class AuthResponse(BaseModel):
-    user: AuthUser
-    message: str
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
+# -------------------------------------------------------------------
+# 新版本：社交好友 + UUID 群组（social_router / Postgres）
+# -------------------------------------------------------------------
 
 class FriendAddRequest(BaseModel):
-    friend_code: str  # 通过这个 ID 加好友
+    friend_code: str  # 通过这个 user_code 加好友
 
 
 class FriendSummary(BaseModel):
@@ -239,6 +256,7 @@ class FriendSummary(BaseModel):
 class GroupCreateRequest(BaseModel):
     name: str
     description: Optional[str] = None
+    # 之后如果要“创建群时直接加成员”，可以在这里加 member_codes: List[str] = []
 
 
 class GroupSummary(BaseModel):

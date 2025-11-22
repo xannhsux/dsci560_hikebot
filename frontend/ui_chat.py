@@ -9,6 +9,7 @@ from api import (
     send_group_message,
     fetch_group_members,
     join_group,
+    leave_group,        # ✅ 新增：记得把 leave_group 引进来
     ask_ai_trail,
 )
 from state import ensure_members_cached, in_group
@@ -29,19 +30,20 @@ def render_members_panel(group_id: str, username: str) -> None:
         return
 
     members = ensure_members_cached(group_id, fetch_group_members)
+
     if members:
-        for m in members:
-            st.markdown(f"- {m}")
+        for name in members:  # ["alice", "bob"]
+            st.markdown(f"- {name}")
     else:
         st.caption("No members yet.")
 
     st.markdown("---")
 
+    # ✅ 这里统一使用 username 传给 join_group / leave_group
     if in_group(group_id, username, fetch_group_members):
         if st.button("Quit this group", key="quit-current-group"):
-            from api import leave_group
             try:
-                members = leave_group(group_id, username)
+                members = leave_group(group_id, username)  # ✅ 传 group_id + username
                 st.session_state.group_members[group_id] = members
                 st.session_state.active_group = None
                 st.session_state.view_mode = "home"
@@ -52,7 +54,7 @@ def render_members_panel(group_id: str, username: str) -> None:
     else:
         if st.button("Join this group", key="join-current-group"):
             try:
-                members = join_group(group_id, username)
+                members = join_group(group_id, username)  # ✅ 同样传两个参数
                 st.session_state.group_members[group_id] = members
                 st.session_state.active_group = group_id
                 st.success("Joined group.")
@@ -63,8 +65,16 @@ def render_members_panel(group_id: str, username: str) -> None:
 
 def render_chat_page(username: str) -> None:
     group_id = st.session_state.active_group
-    if not group_id:
-        st.info("Select a group from the left to start chatting.")
+    if not in_group(group_id, username, fetch_group_members):
+        st.warning("You are not in this group yet. Join to chat.")
+        if st.button("Join this group", key="join-from-chat"):
+            try:
+                members = join_group(group_id, username)  # ✅ 加上 username
+                st.session_state.group_members[group_id] = members
+                st.success("Joined group.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Unable to join group: {exc}")
         return
 
     header = st.container()
@@ -80,11 +90,12 @@ def render_chat_page(username: str) -> None:
                 except Exception as exc:
                     st.error(f"Unable to ask AI: {exc}")
 
+    # 这里再检查一遍是否在群里（保留你的原逻辑，只是改参数）
     if not in_group(group_id, username, fetch_group_members):
         st.warning("You are not in this group yet. Join to chat.")
-        if st.button("Join this group", key="join-from-chat"):
+        if st.button("Join this group", key="join-from-chat-2"):
             try:
-                members = join_group(group_id, username)
+                members = join_group(group_id, username)  # ✅ 同样补上 username
                 st.session_state.group_members[group_id] = members
                 st.success("Joined group.")
                 st.rerun()

@@ -1,54 +1,65 @@
 # backend/auth_router.py
-import re
 
+import re
 import hashlib
-import secrets
-import string
 from fastapi import APIRouter, Depends, HTTPException, Header
-from typing import Optional
-from models import AuthUser  
-from pg_db import fetch_one, fetch_all, execute, fetch_one_returning
-from models import SignupRequest, LoginRequest, AuthResponse, AuthUser
+
+from models import (
+    SignupRequest,
+    LoginRequest,
+    AuthResponse,
+    AuthUser,
+)
+from pg_db import fetch_one, fetch_one_returning
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+# -------------------------
+# 密码 hash
+# -------------------------
 def _hash_password(password: str) -> str:
-    
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-USER_CODE_REGEX = re.compile(r"^[A-Za-z0-9]{4,16}$")  # 举例：4~16位字母数字
+
+# -------------------------
+# 用户手动设置的 user_code 校验
+# -------------------------
+USER_CODE_REGEX = re.compile(r"^[A-Za-z0-9]{4,16}$")  # 可自行放宽
 
 
 def _validate_user_code(user_code: str) -> None:
     if not USER_CODE_REGEX.match(user_code):
         raise HTTPException(
             400,
-            "user_code 需要是 4~16 位的字母和数字组合（不允许空格和符号）",
+            "user_code 必须是 4~16 位的字母和数字（不能有空格、符号）",
         )
 
 
-
-
+# ==============================================================
+#                       /auth/signup
+# ==============================================================
 
 @router.post("/signup", response_model=AuthResponse)
 def signup(payload: SignupRequest) -> AuthResponse:
     username = payload.username.strip()
     user_code = payload.user_code.strip()
+    password = payload.password
 
-    if not username or not payload.password or not user_code:
-        raise HTTPException(400, "username、password 和 user_code 都是必填的")
+    if not username or not password or not user_code:
+        raise HTTPException(400, "username、password、user_code 都是必填的")
 
-    # 校验 user_code 格式（字母数字 + 长度限制）
+    # 校验 user_code 格式
     _validate_user_code(user_code)
 
     # 检查 username 是否重复
-    existing = fetch_one(
+    existing_user = fetch_one(
         "SELECT id FROM users WHERE username = %(u)s",
         {"u": username},
     )
-    if existing:
-        raise HTTPException(400, "Username already exists")
+    if existing_user:
+        raise HTTPException(400, "Username 已经存在")
 
     # 检查 user_code 是否重复
     existing_code = fetch_one(
@@ -56,52 +67,86 @@ def signup(payload: SignupRequest) -> AuthResponse:
         {"c": user_code},
     )
     if existing_code:
-        raise HTTPException(400, "这个 ID（user_code）已经被别人使用了，换一个吧")
+        raise HTTPException(400, "这个 user_code 已被使用，请换一个")
 
-    # 插入 DB
+    # 写入数据库
     row = fetch_one_returning(
         """
         INSERT INTO users (username, user_code, password_hash)
         VALUES (%(u)s, %(code)s, %(pwd)s)
-        RETURNING id, username, user_code, created_at
+        RETURNING id, username, user_code
         """,
         {
             "u": username,
             "code": user_code,
-            "pwd": _hash_password(payload.password),
+            "pwd": _hash_password(password),
         },
     )
 
-    user = AuthUser(id=row["id"], username=row["username"], user_code=row["user_code"])
+    user = AuthUser(
+        id=row["id"],
+        username=row["username"],
+        user_code=row["user_code"],
+    )
+
     return AuthResponse(user=user, message="Signup successful")
 
 
-
+# ==============================================================
+#                       /auth/login
+# ==============================================================
 
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest) -> AuthResponse:
     username = payload.username.strip()
-    user = fetch_one(
-        "SELECT id, username, user_code, password_hash FROM users WHERE username = %(u)s",
+    password = payload.password
+
+    # 查用户
+    row = fetch_one(
+        """
+        SELECT id, username, user_code, password_hash
+        FROM users
+        WHERE username = %(u)s
+        """,
         {"u": username},
     )
-    if not user or user["password_hash"] != _hash_password(payload.password):
+    if not row:
         raise HTTPException(400, "Invalid username or password")
 
-    auth_user = AuthUser(id=user["id"], username=user["username"], user_code=user["user_code"])
-    return AuthResponse(user=auth_user, message="Login successful")
+    if row["password_hash"] != _hash_password(password):
+        raise HTTPException(400, "Invalid username or password")
+
+    user = AuthUser(
+        id=row["id"],
+        username=row["username"],
+        user_code=row["user_code"],
+    )
+
+    return AuthResponse(user=user, message="Login successful")
 
 
-# -------- current user dependency (通过 header) --------
+# ==============================================================
+#           current user dependency (用于 /social/* )
+# ==============================================================
 
 def get_current_user(
     x_username: str = Header(..., alias="X-Username"),
     x_user_code: str = Header(..., alias="X-User-Code"),
 ) -> AuthUser:
-    user = fetch_one(
-        "SELECT id, username, user_code FROM users WHERE username = %(u)s AND user_code = %(c)s",
+    row = fetch_one(
+        """
+        SELECT id, username, user_code
+        FROM users
+        WHERE username = %(u)s AND user_code = %(c)s
+        """,
         {"u": x_username, "c": x_user_code},
     )
-    if not user:
+
+    if not row:
         raise HTTPException(401, "Invalid auth headers")
-    return AuthUser(id=user["id"], username=user["username"], user_code=user["user_code"])
+
+    return AuthUser(
+        id=row["id"],
+        username=row["username"],
+        user_code=row["user_code"],
+    )

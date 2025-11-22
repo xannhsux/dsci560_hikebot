@@ -370,3 +370,101 @@ def ai_recommend_routes(
 
     return GroupMessageModel(**row)
 
+# ---------- List members (simple string list) ----------
+
+@router.get("/groups/{group_id}/members", response_model=List[str])
+def list_group_members(
+    group_id: UUID,
+    current: AuthUser = Depends(get_current_user),
+) -> List[str]:
+    # Check membership first
+    member = fetch_one(
+        "SELECT 1 FROM group_members WHERE group_id = %(gid)s AND user_id = %(uid)s",
+        {"gid": str(group_id), "uid": current.id},
+    )
+    if not member:
+        raise HTTPException(403, "Not a member")
+
+    rows = fetch_all(
+        """
+        SELECT u.username
+        FROM group_members gm
+        JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = %(gid)s
+        ORDER BY u.username
+        """,
+        {"gid": str(group_id)},
+    )
+    return [r["username"] for r in rows]  # → ["alice", "bob"]
+
+
+# ---------- Join group ----------
+
+@router.post("/groups/{group_id}/join", response_model=List[str])
+def join_group(
+    group_id: UUID,
+    current: AuthUser = Depends(get_current_user),
+) -> List[str]:
+
+    # Check if already joined
+    exists = fetch_one(
+        """
+        SELECT 1 FROM group_members
+        WHERE group_id = %(gid)s AND user_id = %(uid)s
+        """,
+        {"gid": str(group_id), "uid": current.id},
+    )
+    if not exists:
+        execute(
+            """
+            INSERT INTO group_members (group_id, user_id, role)
+            VALUES (%(gid)s, %(uid)s, 'member')
+            """,
+            {"gid": str(group_id), "uid": current.id},
+        )
+
+    # Return updated member list
+    rows = fetch_all(
+        """
+        SELECT u.username
+        FROM group_members gm
+        JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = %(gid)s
+        ORDER BY u.username
+        """,
+        {"gid": str(group_id)},
+    )
+    return [r["username"] for r in rows]
+
+
+# ---------- Leave group ----------
+
+@router.post("/groups/{group_id}/leave", response_model=List[str])
+def leave_group(
+    group_id: UUID,
+    current: AuthUser = Depends(get_current_user),
+) -> List[str]:
+
+    # Remove from group_members
+    execute(
+        """
+        DELETE FROM group_members
+        WHERE group_id = %(gid)s AND user_id = %(uid)s
+        """,
+        {"gid": str(group_id), "uid": current.id},
+    )
+
+    # Return updated list
+    rows = fetch_all(
+        """
+        SELECT u.username
+        FROM group_members gm
+        JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = %(gid)s
+        ORDER BY u.username
+        """,
+        {"gid": str(group_id)},
+    )
+    return [r["username"] for r in rows]
+
+

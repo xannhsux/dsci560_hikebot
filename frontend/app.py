@@ -35,21 +35,23 @@ def render_auth_gate() -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Login failed: {exc}")
-
     with signup_tab:
         with st.form("signup_form"):
-            username = st.text_input("New username", key="signup_username")
-            password = st.text_input("New password", type="password", key="signup_password")
-            submitted = st.form_submit_button("Create account")
+            username = st.text_input("Username")
+            user_code = st.text_input(
+                "Hike ID (User Code)",
+                help="4–16 letters or numbers. This will be your unique ID for adding friends."
+        )
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Create Account")
         if submitted:
             try:
-                msg = auth_request("/auth/signup", username, password)
-                st.session_state.user = username
-                st.session_state.current_user = username
+                msg = auth_request("/auth/signup", username, password, user_code)
                 st.success(msg)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Signup failed: {exc}")
+    
 
 
 def render_top_bar(username: str) -> None:
