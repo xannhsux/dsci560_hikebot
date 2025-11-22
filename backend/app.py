@@ -8,6 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware  # 👈 加这一行
 from pathlib import Path
+from auth_router import router as auth_router
+from social_router import router as social_router
+from uuid import UUID
+from pg_db import fetch_one, fetch_one_returning
+from models import AuthUser
+
 
 from models import (
     AuthResponse,
@@ -43,6 +49,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="HikeBot Backend")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+app.include_router(auth_router)
+app.include_router(social_router)
 
 
 
@@ -264,3 +274,121 @@ async def demo_chat():
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Chat demo asset missing.")
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+class ConnectionManager:
+    """按 group_id 管理 WebSocket 连接"""
+
+    def __init__(self) -> None:
+        # rooms[group_id][user_id] = websocket
+        self.rooms: Dict[str, Dict[int, WebSocket]] = {}
+
+    async def connect(self, group_id: str, user_id: int, websocket: WebSocket):
+        await websocket.accept()
+        self.rooms.setdefault(group_id, {})
+        self.rooms[group_id][user_id] = websocket
+
+    def disconnect(self, group_id: str, user_id: int):
+        if group_id in self.rooms and user_id in self.rooms[group_id]:
+            del self.rooms[group_id][user_id]
+            if not self.rooms[group_id]:
+                del self.rooms[group_id]
+
+    async def broadcast_json(self, group_id: str, message: dict):
+        import json
+        data = json.dumps(message)
+        room = self.rooms.get(group_id)
+        if not room:
+            return
+        dead = []
+        for uid, ws in list(room.items()):
+            try:
+                await ws.send_text(data)
+            except RuntimeError:
+                dead.append(uid)
+        for uid in dead:
+            self.disconnect(group_id, uid)
+
+
+manager = ConnectionManager()
+
+
+async def _get_user_for_ws(username: str, user_code: str) -> AuthUser | None:
+    """
+    WebSocket 无法用 FastAPI 的 Depends，我们手动查用户。
+    """
+    row = fetch_one(
+        "SELECT id, username, user_code FROM users WHERE username = %(u)s AND user_code = %(c)s",
+        {"u": username, "c": user_code},
+    )
+    if not row:
+        return None
+    return AuthUser(id=row["id"], username=row["username"], user_code=row["user_code"])
+
+
+@app.websocket("/ws/groups/{group_id}")
+async def group_ws(
+    websocket: WebSocket,
+    group_id: str,
+    username: str,
+    user_code: str,
+):
+    """
+    群聊 WebSocket：
+    - 前端连接时传：ws://.../ws/groups/{group_id}?username=xxx&user_code=YYY
+    - 只允许 group 成员连接
+    """
+    # 1) 验证用户
+    user = await _get_user_for_ws(username, user_code)
+    if not user:
+        await websocket.close(code=4401)
+        return
+
+    # 2) 确认这个用户是 group 成员
+    membership = fetch_one(
+        """
+        SELECT 1 FROM group_members
+        WHERE group_id = %(gid)s AND user_id = %(uid)s
+        """,
+        {"gid": group_id, "uid": user.id},
+    )
+    if not membership:
+        await websocket.close(code=4403)
+        return
+
+    # 3) 正式加入房间
+    await manager.connect(group_id, user.id, websocket)
+
+    try:
+        while True:
+            text = await websocket.receive_text()
+
+            # 写入数据库
+            row = fetch_one_returning(
+                """
+                INSERT INTO group_messages (group_id, user_id, sender_display, role, content)
+                VALUES (%(gid)s, %(uid)s, %(sender)s, 'user', %(content)s)
+                RETURNING id, group_id, sender_display AS sender, role, content, created_at
+                """,
+                {
+                    "gid": group_id,
+                    "uid": user.id,
+                    "sender": user.username,
+                    "content": text,
+                },
+            )
+
+            msg = {
+                "id": row["id"],
+                "group_id": str(row["group_id"]),
+                "sender": row["sender"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"].isoformat(),
+            }
+
+            # 只在当前 group 内广播
+            await manager.broadcast_json(group_id, msg)
+
+    except WebSocketDisconnect:
+        manager.disconnect(group_id, user.id)

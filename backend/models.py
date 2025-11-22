@@ -196,3 +196,82 @@ class GroupChatPost(BaseModel):
 class GroupChatResponse(BaseModel):
     route_id: str
     messages: List[GroupMessage]
+# backend/models.py 中追加
+
+from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Optional, List
+from uuid import UUID
+
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    user_code: str   
+
+
+class AuthUser(BaseModel):
+    id: int
+    username: str
+    user_code: str
+
+
+class AuthResponse(BaseModel):
+    user: AuthUser
+    message: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class FriendAddRequest(BaseModel):
+    friend_code: str  # 通过这个 ID 加好友
+
+
+class FriendSummary(BaseModel):
+    id: int
+    username: str
+    user_code: str
+
+
+class GroupCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class GroupSummary(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str]
+    created_at: datetime
+
+
+class GroupMemberInfo(BaseModel):
+    id: int
+    username: str
+    user_code: str
+    role: str
+    joined_at: datetime
+
+
+class GroupDetailResponse(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str]
+    created_at: datetime
+    members: List[GroupMemberInfo]
+
+
+class GroupMessageModel(BaseModel):
+    id: int
+    group_id: UUID
+    sender: str
+    role: str
+    content: str
+    created_at: datetime
+
+
+class MessageCreateRequest(BaseModel):
+    content: str

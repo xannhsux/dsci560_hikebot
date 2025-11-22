@@ -1,175 +1,25 @@
-"""Streamlit UI for the HikeBot chatbot."""
-
+# app.py
 from __future__ import annotations
 
-import os
-from datetime import datetime
-from html import escape
-from textwrap import dedent
-from typing import Any, Dict, List, Optional
-
-import requests
 import streamlit as st
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+from state import init_state
+from api import auth_request, fetch_routes
+from ui_home import render_home_page
+from ui_chat import render_chat_page, render_members_panel
+from ui_common import render_message_bubble  # if needed in future
+from api import fetch_groups, fetch_friends
+from ui_friends import render_add_friend_page
+from ui_groups import render_create_group_page
+from api import fetch_friend_requests
 
 
-# --------- 初始化群聊相关状态 ---------
 
-def init_state() -> None:
-    # 已登录用户名（后端用）
-    if "user" not in st.session_state:
-        st.session_state.user = None
-
-    # 当前登录用户（决定聊天气泡位置）
-    if "current_user" not in st.session_state:
-        st.session_state.current_user = None
-
-    # 聊天记录：可以同时兼容旧结构和新结构
-    # 新结构：{"sender", "role", "content", "timestamp"}
-    if "messages" not in st.session_state:
-        st.session_state.messages = [
-            {
-                "sender": "HikeBot",
-                "role": "assistant",
-                "content": "Hey trail crew! How can I help today?",
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        ]
-
-    if "group_members" not in st.session_state:
-        st.session_state.group_members: Dict[str, List[str]] = {}
-
-    if "active_group_route" not in st.session_state:
-        st.session_state.active_group_route: Optional[str] = None
-
-    if "view_mode" not in st.session_state:
-        st.session_state.view_mode = "home"
-
-
-# --------- 调用后端的函数 ---------
-
-def send_message(message: str) -> str:
-    payload: Dict[str, Any] = {"user_message": message}
-    response = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("reply", "No response received.")
-
-
-def auth_request(endpoint: str, username: str, password: str) -> str:
-    response = requests.post(
-        f"{BACKEND_URL}{endpoint}",
-        json={"username": username, "password": password},
-        timeout=15,
-    )
-    response.raise_for_status()
-    return response.json().get("message", "Success.")
-
-
-@st.cache_data(ttl=600)
-def fetch_routes() -> List[Dict[str, Any]]:
-    response = requests.get(f"{BACKEND_URL}/routes", timeout=15)
-    response.raise_for_status()
-    return response.json().get("routes", [])
-
-
-def request_weather(route_id: str, when: datetime) -> Dict[str, Any]:
-    payload = {"route_id": route_id, "start_iso": when.isoformat()}
-    response = requests.post(f"{BACKEND_URL}/weather/snapshot", json=payload, timeout=20)
-    response.raise_for_status()
-    return response.json()
-
-
-def join_route_group(route_id: str, username: str) -> List[str]:
-    payload = {"route_id": route_id, "username": username}
-    response = requests.post(f"{BACKEND_URL}/groups/join", json=payload, timeout=15)
-    response.raise_for_status()
-    return response.json().get("members", [])
-
-
-def leave_route_group_request(route_id: str, username: str) -> List[str]:
-    payload = {"route_id": route_id, "username": username}
-    response = requests.post(f"{BACKEND_URL}/groups/leave", json=payload, timeout=15)
-    response.raise_for_status()
-    return response.json().get("members", [])
-
-
-def fetch_group_members(route_id: str) -> List[str]:
-    response = requests.get(f"{BACKEND_URL}/groups/{route_id}/members", timeout=15)
-    response.raise_for_status()
-    return response.json().get("members", [])
-
-
-def fetch_group_messages(route_id: str) -> List[Dict[str, Any]]:
-    response = requests.get(f"{BACKEND_URL}/groups/{route_id}/messages", timeout=15)
-    response.raise_for_status()
-    return response.json().get("messages", [])
-
-
-def send_group_message(route_id: str, username: str, content: str) -> List[Dict[str, Any]]:
-    payload = {"route_id": route_id, "username": username, "content": content}
-    response = requests.post(f"{BACKEND_URL}/groups/message", json=payload, timeout=15)
-    response.raise_for_status()
-    return response.json().get("messages", [])
-
-
-def get_cached_members(route_id: str) -> List[str]:
-    if not route_id:
-        return []
-    if route_id not in st.session_state.group_members:
-        try:
-            members = fetch_group_members(route_id)
-        except requests.RequestException:
-            members = []
-        st.session_state.group_members[route_id] = members
-    return st.session_state.group_members[route_id]
-
-
-def handle_join_route(route_id: str, username: str) -> bool:
-    if not username:
-        st.warning("Please log in to join a group.")
-        return False
-    try:
-        members = join_route_group(route_id, username)
-    except requests.RequestException as exc:
-        st.error(f"Unable to join group: {exc}")
-        return False
-    st.session_state.group_members[route_id] = members
-    st.session_state.active_group_route = route_id
-    st.session_state.view_mode = "group"
-    return True
-
-
-def handle_leave_route(route_id: str, username: str) -> bool:
-    if not username:
-        st.warning("Please log in to manage groups.")
-        return False
-    try:
-        members = leave_route_group_request(route_id, username)
-    except requests.RequestException as exc:
-        st.error(f"Unable to leave group: {exc}")
-        return False
-    st.session_state.group_members[route_id] = members
-    if st.session_state.active_group_route == route_id:
-        st.session_state.view_mode = "home"
-    return True
-
-
-def user_in_group(route_id: Optional[str], username: Optional[str]) -> bool:
-    if not route_id or not username:
-        return False
-    members = st.session_state.group_members.get(route_id)
-    if members is None:
-        members = get_cached_members(route_id)
-    return any(member.lower() == username.lower() for member in members)
-
-
-# --------- 认证 UI（基本不变，只加了一行 current_user） ---------
-
-def render_auth_gate() -> bool:
+def render_auth_gate() -> None:
     st.subheader("Login or Sign up")
     login_tab, signup_tab = st.tabs(["Login", "Sign up"])
+
+    from api import auth_request
 
     with login_tab:
         with st.form("login_form"):
@@ -178,14 +28,13 @@ def render_auth_gate() -> bool:
             submitted = st.form_submit_button("Login")
         if submitted:
             try:
-                message = auth_request("/auth/login", username, password)
-                st.session_state["user"] = username
-                # 登录成功后，当前扮演身份 = 自己
-                st.session_state["current_user"] = username
-                st.success(message)
+                msg = auth_request("/auth/login", username, password)
+                st.session_state.user = username
+                st.session_state.current_user = username
+                st.success(msg)
                 st.rerun()
-            except requests.RequestException as exc:
-                st.error(f"Login failed: {exc.response.text if exc.response else exc}")
+            except Exception as exc:
+                st.error(f"Login failed: {exc}")
 
     with signup_tab:
         with st.form("signup_form"):
@@ -194,218 +43,108 @@ def render_auth_gate() -> bool:
             submitted = st.form_submit_button("Create account")
         if submitted:
             try:
-                message = auth_request("/auth/signup", username, password)
-                st.session_state["user"] = username
-                st.session_state["current_user"] = username
-                st.success(message)
+                msg = auth_request("/auth/signup", username, password)
+                st.session_state.user = username
+                st.session_state.current_user = username
+                st.success(msg)
                 st.rerun()
-            except requests.RequestException as exc:
-                st.error(f"Signup failed: {exc.response.text if exc.response else exc}")
-
-    return False
+            except Exception as exc:
+                st.error(f"Signup failed: {exc}")
 
 
-# --------- Sidebar：行程历史 + Logout（原样保留） ---------
+def render_top_bar(username: str) -> None:
+    top = st.container()
+    with top:
+        col_l, col_r = st.columns([2, 2])
+        with col_l:
+            st.title("HikeBot")
+            st.caption("Hiking group companion for routes, weather, gear, and safety tips.")
+        with col_r:
+            c1, c2, c3 = st.columns([1, 1, 2])
+            with c1:
+                if st.button("Add Friend"):
+                    # Switch center panel to the Add Friend page
+                    st.session_state.view_mode = "add_friend"
+            with c2:
+                if st.button("Create Group"):
+                    st.session_state.view_mode = "create_group"
 
-def render_sidebar(username: str, routes: List[Dict[str, Any]]) -> None:
-    with st.sidebar:
-        st.header("Trail Groups")
-        if not routes:
-            st.caption("No trail data yet. Ask HikeBot for recommendations first.")
-        else:
-            if not st.session_state.active_group_route:
-                st.session_state.active_group_route = routes[0]["id"]
-
-            options = {f"{r['name']} — {r.get('location', '')}": r["id"] for r in routes}
-            labels = list(options.keys())
-            current_route = st.session_state.active_group_route
-            try:
-                current_index = list(options.values()).index(current_route)
-            except ValueError:
-                current_index = 0
-
-            label = st.selectbox(
-                "Choose a trail", labels, index=current_index, key="sidebar_group_select"
-            )
-            selected_route = options[label]
-            if selected_route != st.session_state.active_group_route:
-                st.session_state.active_group_route = selected_route
-
-            route = next((r for r in routes if r["id"] == selected_route), None)
-            if route:
-                st.caption(
-                    f"{route['distance_km']} km · {route['elevation_gain_m']} m gain · "
-                    f"{route['difficulty'].title()} · ~{route['drive_time_min']} min drive"
-                )
-                st.write(route.get("summary", ""))
-
-            joined = user_in_group(selected_route, username)
-            if joined:
-                if st.button("Quit this group", key=f"sidebar-leave-{selected_route}"):
-                    if handle_leave_route(selected_route, username):
-                        st.success("You left this group.")
-            else:
-                if st.button("Join this group", key=f"sidebar-join-{selected_route}"):
-                    if handle_join_route(selected_route, username):
-                        st.success("You're in! Check the member list below.")
-
-            members = get_cached_members(selected_route)
-            st.markdown("**Members**")
-            if members:
-                for member in members:
-                    st.markdown(f"- {member}")
-            else:
-                st.caption("No one has joined this group yet.")
-
-        st.markdown("---")
-        if st.button("Log out"):
-            st.session_state.pop("user", None)
-            st.rerun()
+            with c3:
+                st.markdown(f"**Logged in as `{username}`**")
 
 
-# --------- Weather 工具（挪到右侧列用） ---------
 
-def render_message_bubble(msg: Dict[str, Any]) -> None:
-    # 兼容旧结构
-    sender = msg.get("sender")
-    role = msg.get("role", "user")
-    content = msg.get("content", "")
-    ts = msg.get("timestamp")
+def render_sidebar_tabs(username: str) -> None:
+    st.markdown("### People")
+    from api import fetch_groups, fetch_friends
 
-    if sender is None:
-        # 如果是旧结构：没有 sender，用 role 猜一下
-        sender = "You" if role == "user" else "HikeBot"
-
-    # 自己的消息右对齐，别人左对齐
-    is_me = sender == st.session_state.current_user
-    align = "flex-end" if is_me else "flex-start"
-    bubble_color = "#DCF8C6" if is_me else "#FFFFFF"  # 右绿左白
-    text_align = "right" if is_me else "left"
-
-    # 时间格式化
-    time_str = ""
-    if ts:
-        try:
-            dt = datetime.fromisoformat(ts)
-            time_str = dt.strftime("%H:%M")
-        except Exception:
-            time_str = str(ts)
-
-    safe_sender = escape(sender)
-    safe_time = escape(time_str)
-    safe_content = escape(content).replace("\n", "<br>")
-
-    bubble_html = dedent(
-        f"""
-        <div style="display: flex; justify-content: {align}; margin-bottom: 8px;">
-          <div style="max-width: 75%; display: flex; flex-direction: column; align-items: {text_align};">
-            <div style="font-size: 12px; color: #888888; margin-bottom: 2px;">
-              {safe_sender} · {safe_time}
-            </div>
-            <div style="
-              background-color: {bubble_color};
-              padding: 8px 12px;
-              border-radius: 16px;
-              box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-              font-size: 14px;
-              line-height: 1.4;
-              white-space: pre-wrap;
-              text-align: left;
-            ">
-              {safe_content}
-            </div>
-          </div>
-        </div>
-        """
-    ).strip()
-
-    st.markdown(bubble_html, unsafe_allow_html=True)
-
-
-# --------- 主入口：群聊 UI ---------
-
-def render_home_chat(user: str) -> None:
-    st.subheader("AI Planning Chat")
-    chat_container = st.container()
-    with chat_container:
-        if not st.session_state.messages:
-            st.caption("No messages yet. Start the conversation!")
-        else:
-            for msg in st.session_state.messages:
-                render_message_bubble(msg)
-
-    prompt = st.chat_input("Ask about hikes, gear, weather, or safety…", key="home_chat_input")
-    if prompt:
-        now_str = datetime.utcnow().isoformat()
-        st.session_state.messages.append(
-            {
-                "sender": st.session_state.current_user,
-                "role": "user",
-                "content": prompt,
-                "timestamp": now_str,
-            }
-        )
-        try:
-            reply = send_message(prompt)
-        except requests.RequestException as exc:
-            reply = f"⚠️ Unable to reach backend: {exc}"
-
-        st.session_state.messages.append(
-            {
-                "sender": "HikeBot",
-                "role": "assistant",
-                "content": reply,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        )
-        st.rerun()
-
-
-def render_group_chat(user: str, routes: List[Dict[str, Any]]) -> None:
-    route_id = st.session_state.active_group_route
-    if not route_id:
-        st.warning("Join a trail group from the sidebar to start chatting.")
-        return
-
-    route = next((r for r in routes if r["id"] == route_id), None)
-    title = route["name"] if route else route_id
-    st.subheader(f"{title} · Group Chat")
-    if st.button("← Back to AI home", key="back_home"):
-        st.session_state.view_mode = "home"
-        st.rerun()
-
+    # ---- compute pending friend requests for badge ----
+    pending_count = 0
     try:
-        messages = fetch_group_messages(route_id)
-    except requests.RequestException as exc:
-        st.error(f"Unable to load group chat: {exc}")
-        return
+        requests = fetch_friend_requests(username)
+        pending_count = len(requests)
+    except Exception:
+        # Don't break sidebar if backend fails
+        pending_count = 0
 
-    for msg in messages:
-        render_message_bubble(
-            {
-                "sender": msg.get("sender"),
-                "role": "user",
-                "content": msg.get("content", ""),
-                "timestamp": msg.get("timestamp"),
-            }
-        )
+    friends_label = "Friends"
+    if pending_count > 0:
+        # Red dot style label, e.g. "Friends 🔴 (3)"
+        friends_label = f"Friends 🔴 ({pending_count})"
 
-    group_input = st.chat_input("Share an update with the group…", key="group_chat_input")
-    if group_input:
+    tab_friends, tab_groups = st.tabs([friends_label, "Groups"])
+
+    # ---- Friends tab ----
+    with tab_friends:
         try:
-            send_group_message(route_id, user, group_input)
-        except requests.RequestException as exc:
-            st.error(f"Unable to send message: {exc}")
+            friends = fetch_friends(username)
+        except Exception as exc:
+            friends = []
+            st.error(f"Unable to load friends: {exc}")
+
+        if pending_count > 0:
+            st.markdown(f"**You have {pending_count} pending friend request(s).**")
+
+        if not friends:
+            st.caption("No friends yet.")
+        else:
+            for f in friends:
+                name = f.get("display_name") or f.get("username") or "Friend"
+                friend_id = f.get("id")
+                label = f"💬 {name}"
+                if st.button(label, key=f"friend-{friend_id}"):
+                    st.session_state.active_group = f"friend:{friend_id}"
+                    st.session_state.view_mode = "chat"
+
+    # ---- Groups tab ----
+    with tab_groups:
+        try:
+            groups = fetch_groups(username)
+        except Exception as exc:
+            groups = []
+            st.error(f"Unable to load groups: {exc}")
+
+        if not groups:
+            st.caption("No groups yet. Create one from the top-right button.")
             return
-        st.rerun()
+
+        for g in groups:
+            gid = g["id"]
+            name = g.get("name", "Unnamed group")
+            label = f"👥 {name}"
+            is_active = (gid == st.session_state.active_group)
+            if is_active:
+                label = "✅ " + label
+
+            if st.button(label, key=f"group-{gid}"):
+                st.session_state.active_group = gid
+                st.session_state.view_mode = "chat"
+
 
 
 def main() -> None:
     st.set_page_config(page_title="HikeBot Chat", page_icon="🥾", layout="wide")
     init_state()
-
-    st.title("HikeBot")
-    st.caption("Hiking group companion for routes, weather, gear, and safety tips.")
 
     user = st.session_state.get("user")
     if not user:
@@ -414,26 +153,65 @@ def main() -> None:
 
     st.session_state.current_user = user
 
-    routes = fetch_routes()
-    render_sidebar(user, routes)
-    st.info(f"Logged in as {user}")
+    render_top_bar(user)
 
-    if routes and not st.session_state.active_group_route:
-        st.session_state.active_group_route = routes[0]["id"]
+    col_sidebar, col_main, col_members = st.columns([1.2, 2.6, 1.2])
 
-    if (
-        st.session_state.view_mode == "home"
-        and st.session_state.active_group_route
-        and user_in_group(st.session_state.active_group_route, user)
-    ):
-        if st.button("Go to current trail group", key="jump_to_group"):
-            st.session_state.view_mode = "group"
-            st.rerun()
+    with col_sidebar:
+        render_sidebar_tabs(user)
 
-    if st.session_state.view_mode == "group":
-        render_group_chat(user, routes)
-    else:
-        render_home_chat(user)
+    with col_main:
+        if st.session_state.view_mode == "home":
+            render_home_page(user)
+        elif st.session_state.view_mode == "chat":
+            render_chat_page(user)
+        elif st.session_state.view_mode == "add_friend":
+            render_add_friend_page(user)
+        elif st.session_state.view_mode == "create_group":
+            render_create_group_page(user)
+
+        else:
+            # Fallback to home if unknown
+            st.session_state.view_mode = "home"
+            render_home_page(user)
+
+
+    with col_members:
+        if st.session_state.view_mode == "chat":
+            render_members_panel(st.session_state.active_group, user)
+        elif st.session_state.view_mode == "add_friend":
+            st.subheader("Tips")
+            st.caption("Use the center panel to add new friends or accept requests.")
+        else:
+            st.subheader("Group Members")
+            st.caption("Open a group chat to see who is going.")
+
+    st.markdown("---")
+    if st.button("Log out"):
+        for key in list(st.session_state.keys()):
+            st.session_state.pop(key, None)
+        st.experimental_rerun()
+
+# ---- Create Group API ----
+
+def create_group(username: str, group_name: str, members: List[str]) -> Dict[str, Any]:
+    """
+    Create a new group with group_name and initial members.
+    Adjust payload or endpoint based on your backend implementation.
+    """
+    payload = {
+        "creator": username,
+        "group_name": group_name,
+        "members": members,
+    }
+    r = requests.post(
+        f"{BACKEND_URL}/social/groups/create",
+        json=payload,
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
 
 
 if __name__ == "__main__":
