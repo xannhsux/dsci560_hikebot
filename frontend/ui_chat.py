@@ -11,6 +11,9 @@ from api import (
     join_group,
     leave_group,
     ask_ai_trail,
+    ask_ai_chat_suggestions,
+    announce_trail_briefing,
+    fetch_routes,
 )
 from state import ensure_members_cached, in_group
 from ui_common import render_message_bubble
@@ -88,17 +91,48 @@ def render_chat_page(username: str) -> None:
         st.info("Select a group from the Home page to start chatting.")
         return
 
+    # preload routes for briefing selection
+    routes = []
+    try:
+        routes = fetch_routes()
+    except Exception:
+        routes = []
+
     # Header with AI helper
     header = st.container()
     with header:
-        c1, c2 = st.columns([3, 1])
+        c1, c2, c3 = st.columns([3, 2, 2])
         with c1:
             st.subheader(f"Group {group_id} · Chat")
         with c2:
-            if st.button("Ask AI for Trail", key="ask-ai-trail"):
+            if st.button("AI Suggestions", key="ask-ai-chat-tips"):
+                try:
+                    ask_ai_chat_suggestions(group_id)
+                    st.success("Trail Mind added suggestions to the chat.")
+                except Exception as exc:
+                    st.error(f"Unable to get AI suggestions: {exc}")
+        with c3:
+            route_options = routes or []
+            route_labels = [f"{r.get('name','Route')} — {r.get('location','')}" for r in route_options]
+            if route_labels:
+                default_idx = 0
+                selected_label = st.selectbox(
+                    "Trail briefing",
+                    route_labels,
+                    index=default_idx,
+                    key=f"brief_route_{group_id}",
+                )
+                chosen = route_options[route_labels.index(selected_label)]
+                if st.button("Send briefing", key="send-briefing"):
+                    try:
+                        announce_trail_briefing(group_id, chosen.get("id"))
+                        st.success("Trail briefing posted.")
+                    except Exception as exc:
+                        st.error(f"Unable to post briefing: {exc}")
+            if st.button("AI Route Ideas", key="ask-ai-trail"):
                 try:
                     ask_ai_trail(group_id)
-                    st.success("AI route recommendation request sent to the group.")
+                    st.success("AI route ideas sent to the group.")
                 except Exception as exc:
                     st.error(f"Unable to ask AI: {exc}")
 

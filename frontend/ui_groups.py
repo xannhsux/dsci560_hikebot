@@ -1,6 +1,6 @@
 # ui_groups.py
 
-from api import fetch_friends, create_group
+from api import fetch_friends, create_group, fetch_groups
 import streamlit as st
 from typing import List, Dict, Any
 
@@ -10,8 +10,8 @@ def render_create_group_page(username: str) -> None:
         """
         <div class="hero">
           <div class="pill">Summit together</div>
-          <h3 style="margin:6px 0;">Create a hiking group</h3>
-          <p style="margin:0;color:var(--muted);">Name your crew, invite partners by Hike ID, and jump straight into chat.</p>
+          <h3 style="margin:6px 0;">Your hiking groups</h3>
+          <p style="margin:0;color:var(--muted);">Jump into existing groups or start a new one with your crew.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -22,9 +22,36 @@ def render_create_group_page(username: str) -> None:
         st.session_state.view_mode = "home"
         st.rerun()
 
+    # ---- My groups ----
     st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### My groups")
+    try:
+        groups = fetch_groups()
+    except Exception as exc:
+        groups = []
+        st.error(f"Unable to load groups: {exc}")
 
-    # ---- Fetch friends ----
+    if not groups:
+        st.caption("No groups yet.")
+    else:
+        for g in groups:
+            gid = g.get("id")
+            name = g.get("name") or "Group"
+            desc = g.get("description") or ""
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{name}**  \n{desc}")
+            with col2:
+                if st.button("Enter chat", key=f"enter_group_{gid}"):
+                    st.session_state.active_group = gid
+                    st.session_state.view_mode = "chat"
+                    st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ---- Create group ----
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### Create a group")
+
     try:
         friends = fetch_friends()
     except Exception as exc:

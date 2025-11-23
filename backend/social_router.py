@@ -1,8 +1,8 @@
 # backend/social_router.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException, Body
+from typing import List, Optional
 from uuid import UUID
 
 
@@ -21,6 +21,7 @@ from models import (
     MessageCreateRequest,
 )
 from auth_router import get_current_user
+from db import list_routes
 import os
 import requests
 
@@ -503,6 +504,52 @@ def _infer_simple_filters_from_group(group_id: UUID) -> dict:
     }
 
 
+def _find_route(route_id: str) -> Optional[dict]:
+    """Find a route by id from the in-memory/seeded catalog."""
+    try:
+        routes = list_routes().routes
+    except Exception:
+        return None
+    for r in routes:
+        if str(r.id) == str(route_id):
+            return r.dict()
+    return None
+
+
+def _compose_trail_briefing(route: dict) -> str:
+    """Create a concise AI-style briefing for a trail."""
+    name = route.get("name", "Trail")
+    distance = route.get("distance_km", "?")
+    gain = route.get("elevation_gain_m", "?")
+    difficulty = str(route.get("difficulty", "unknown")).title()
+    drive = route.get("drive_time_min", "?")
+    tags = route.get("tags") or []
+    tag_str = ", ".join(tags) if tags else "no extra tags"
+    location = route.get("location", "")
+    return (
+        f"🧭 **{name}** — {location}\n"
+        f"- Distance: {distance} km · Gain: {gain} m · Difficulty: {difficulty}\n"
+        f"- Drive: ~{drive} min · Tags: {tag_str}\n"
+        f"- Gear: water, layers, headlamp, sun/bug protection; add traction if wet.\n"
+        f"- Safety: align pace/turnaround; check weather + sunset; share ETA."
+    )
+
+
+def _fetch_recent_group_messages(group_id: UUID, limit: int = 20) -> List[dict]:
+    """Grab recent messages to craft AI tips."""
+    rows = fetch_all(
+        """
+        SELECT sender_display AS sender, content
+        FROM group_messages
+        WHERE group_id = %(gid)s
+        ORDER BY created_at DESC
+        LIMIT %(limit)s
+        """,
+        {"gid": str(group_id), "limit": limit},
+    )
+    return rows
+
+
 @router.post("/groups/{group_id}/ai/recommend_routes", response_model=GroupMessageModel)
 def ai_recommend_routes(
     group_id: UUID,
@@ -530,11 +577,11 @@ def ai_recommend_routes(
         data = resp.json()
     except Exception as exc:
         # 如果路由接口挂了，我们在群里发一个错误提示
-        error_text = f"⚠️ HikeBot AI 调路线推荐失败：{exc}"
+        error_text = f"⚠️ Trail Mind 调路线推荐失败：{exc}"
         row = fetch_one_returning(
             """
             INSERT INTO group_messages (group_id, user_id, sender_display, role, content)
-            VALUES (%(gid)s, NULL, 'HikeBot AI', 'assistant', %(content)s)
+            VALUES (%(gid)s, NULL, 'Trail Mind', 'assistant', %(content)s)
             RETURNING id, group_id, sender_display AS sender, role, content, created_at
             """,
             {
@@ -572,7 +619,7 @@ def ai_recommend_routes(
     row = fetch_one_returning(
         """
         INSERT INTO group_messages (group_id, user_id, sender_display, role, content)
-        VALUES (%(gid)s, NULL, 'HikeBot AI', 'assistant', %(content)s)
+        VALUES (%(gid)s, NULL, 'Trail Mind', 'assistant', %(content)s)
         RETURNING id, group_id, sender_display AS sender, role, content, created_at
         """,
         {
@@ -585,6 +632,86 @@ def ai_recommend_routes(
     # 可以在这里调用 manager.broadcast_json，但 manager 定义在 app.py 里，
     # 我们之后可以再加一个小 hook 把它暴露出来。
 
+    return GroupMessageModel(**row)
+
+
+# ---------- 群内 AI：基于聊天的建议 ----------
+
+@router.post("/groups/{group_id}/ai/chat_suggestions", response_model=GroupMessageModel)
+def ai_chat_suggestions(
+    group_id: UUID,
+    current: AuthUser = Depends(get_current_user),
+) -> GroupMessageModel:
+    member = fetch_one(
+        "SELECT 1 FROM group_members WHERE group_id = %(gid)s AND user_id = %(uid)s",
+        {"gid": str(group_id), "uid": current.id},
+    )
+    if not member:
+        raise HTTPException(403, "Not a member")
+
+    msgs = _fetch_recent_group_messages(group_id)
+    if not msgs:
+        content = (
+            "🤖 Trail Mind：群里还没有对话。聊聊距离、爬升、狗友好、驾车时间，我来给建议。"
+        )
+    else:
+        senders = list({m.get("sender") for m in msgs if m.get("sender")})[:3]
+        content = (
+            "🤖 Trail Mind 浏览了最近的聊天：\n"
+            f"- 参与者：{', '.join(senders)}\n"
+            "- 建议：\n"
+            "  • 确认距离/爬升和驾驶时间的共识\n"
+            "  • 选 2–3 条候选路线，加标签（狗友好/水源/遮荫）\n"
+            "  • 查看天气和日落，设定返程时间\n"
+            "  • 列个装备清单：水、分层、头灯、保暖/防晒/止滑"
+        )
+
+    row = fetch_one_returning(
+        """
+        INSERT INTO group_messages (group_id, user_id, sender_display, role, content)
+        VALUES (%(gid)s, NULL, 'Trail Mind', 'assistant', %(content)s)
+        RETURNING id, group_id, sender_display AS sender, role, content, created_at
+        """,
+        {
+            "gid": str(group_id),
+            "content": content,
+        },
+    )
+    return GroupMessageModel(**row)
+
+
+# ---------- 群内 AI：选定路线后的通告 ----------
+
+@router.post("/groups/{group_id}/ai/announce_trail", response_model=GroupMessageModel)
+def ai_announce_trail(
+    group_id: UUID,
+    route_id: str = Body(..., embed=True),
+    current: AuthUser = Depends(get_current_user),
+) -> GroupMessageModel:
+    member = fetch_one(
+        "SELECT 1 FROM group_members WHERE group_id = %(gid)s AND user_id = %(uid)s",
+        {"gid": str(group_id), "uid": current.id},
+    )
+    if not member:
+        raise HTTPException(403, "Not a member")
+
+    route = _find_route(route_id)
+    if not route:
+        raise HTTPException(404, "Route not found")
+
+    content = "📣 Trail Mind 行前通告\n" + _compose_trail_briefing(route)
+
+    row = fetch_one_returning(
+        """
+        INSERT INTO group_messages (group_id, user_id, sender_display, role, content)
+        VALUES (%(gid)s, NULL, 'Trail Mind', 'assistant', %(content)s)
+        RETURNING id, group_id, sender_display AS sender, role, content, created_at
+        """,
+        {
+            "gid": str(group_id),
+            "content": content,
+        },
+    )
     return GroupMessageModel(**row)
 
 # ---------- List members (simple string list) ----------
@@ -683,5 +810,3 @@ def leave_group(
         {"gid": str(group_id)},
     )
     return [r["username"] for r in rows]
-
-

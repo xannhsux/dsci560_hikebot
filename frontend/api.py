@@ -232,6 +232,30 @@ def ask_ai_trail(group_id: str) -> Dict[str, Any]:
     return r.json()
 
 
+def ask_ai_chat_suggestions(group_id: str) -> Dict[str, Any]:
+    """让 Trail Mind 根据群聊内容给出行动建议。"""
+    r = requests.post(
+        f"{BACKEND_URL}/social/groups/{group_id}/ai/chat_suggestions",
+        headers=_auth_headers(),
+        timeout=20,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def announce_trail_briefing(group_id: str, route_id: str) -> Dict[str, Any]:
+    """发布选定路线的行前通告。"""
+    payload = {"route_id": route_id}
+    r = requests.post(
+        f"{BACKEND_URL}/social/groups/{group_id}/ai/announce_trail",
+        json=payload,
+        headers=_auth_headers(),
+        timeout=20,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 # ============================================================
 # Friends (with auth headers)
 # ============================================================
