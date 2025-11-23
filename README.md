@@ -1,6 +1,6 @@
 # HikeBot – Hiking Group Chatbot
 
-Initial milestone delivers a FastAPI skeleton that will grow into a planning and safety copilot for hiking crews.
+This project delivers a FastAPI backend and Streamlit frontend to create a planning and safety copilot for hiking groups.
 
 ## Project Layout
 ```
@@ -19,6 +19,13 @@ hikebot/
 │  └─ .env.example        # Sample configuration for local dev
 ├─ frontend/
 │  ├─ app.py              # Streamlit chat interface
+│  ├─ ui_home.py          # AI planning chat + trail search
+│  ├─ ui_chat.py          # Group chat UI
+│  ├─ ui_friends.py       # Friend list + add friends
+│  ├─ ui_groups.py        # Create & join groups
+│  ├─ ui_common.py        # Shared UI components (message bubbles, layout, etc.)
+│  ├─ api.py              # Frontend → backend HTTP client
+│  ├─ state.py            # Streamlit session state helpers
 │  ├─ requirements.txt    # UI dependencies
 │  └─ .env.example        # BACKEND_URL config for the UI container
 ├─ docker-compose.yml     # API + Postgres + Redis stack
@@ -26,65 +33,138 @@ hikebot/
 ```
 
 ## Getting Started
-1. **Copy env vars**  
-   `cp backend/.env.example backend/.env` (edit values as needed).
-   
-2. **Launch services**  
-   `docker compose up --build` – this installs Python deps inside the containers, starts FastAPI, and brings up the Streamlit UI.
-3. **Open the chatbot**  
-   Visit `http://localhost:8501` for the HikeBot UI (log in/sign up to chat, view trip history, and pull weather snapshots) or use the REST API directly:
-   - Health: `GET http://localhost:8000/health`  
-   - Route recs: `POST http://localhost:8000/routes/recommendations`  
-     ```json
-     {
-       "max_distance_km": 15,
-       "max_drive_time_min": 120,
-       "need_water": true
-     }
-     ```
-   - Gear checklist: `POST http://localhost:8000/gear/checklist`
-   - Weather: `POST http://localhost:8000/weather/snapshot`
+1. **Copy environment variables**
+   ```
+   cp backend/.env.example backend/.env
+   ```
+   Modify values as needed.
 
-The backend can now source live routes from the Waymarked Trails API (see below) and falls back to in-memory fixtures when no API credentials are provided. Postgres/Redis containers are placeholders for the upcoming persistence and job layers planned in Milestone 2. The Streamlit UI proxies requests to `/chat`, shows each user’s trip history in the sidebar, and handles simple signup/login (credentials live in-memory for demo purposes).
+2. **Launch services**
+   ```
+   docker compose up --build
+   ```
+   This installs dependencies inside containers, starts FastAPI, Postgres, Redis, and the Streamlit UI.
+
+3. **Open the chatbot UI**
+   Visit:
+   ```
+   http://localhost:8501
+   ```
+
+### API Examples
+- Health check: `GET http://localhost:8000/health`
+- Route recommendations:
+  ```json
+  {
+    "max_distance_km": 15,
+    "max_drive_time_min": 120,
+    "need_water": true
+  }
+  ```
+- Gear checklist: `POST /gear/checklist`
+- Weather snapshot: `POST /weather/snapshot`
 
 ## Route Data Sources
-HikeBot attempts to pull real routes from [Waymarked Trails](https://waymarkedtrails.org) at startup. Configure the integration in `backend/.env`:
+HikeBot fetches routes from the Waymarked Trails API. Configure in `backend/.env`:
 
 ```
 WAYMARKED_API_URL=https://hiking.waymarkedtrails.org/api/v1
 WAYMARKED_THEME=hiking
 WAYMARKED_LIMIT=25
-WAYMARKED_BBOX=-124.3,32.5,-113.5,42.0  # optional bounding box (lon/lat pairs)
+WAYMARKED_BBOX=-124.3,32.5,-113.5,42.0
 ```
 
-- Leave `WAYMARKED_API_URL` empty to stick with the baked-in fixtures.
-- Adjust the bounding box/limit if you want to constrain the download to a specific region.
-- The loader logs a warning and falls back to `seed_routes` if the API cannot be reached (useful for offline dev).
+If the API cannot be reached, the backend automatically falls back to local seed data.
 
-Trailforks exports are still supported for deterministic testing. Run `fetch_trailforks_routes.py` and keep the resulting JSON under `backend/data/` if you prefer those fixtures.
+### Trailforks Data (Optional)
+```bash
+cd backend
+export TRAILFORKS_API_KEY=your-key
+python fetch_trailforks_routes.py --region-id 1234 --limit 50
+```
 
 ## Trail Groups
-Each route spawns a lightweight “group chat” on the backend. Call:
-- `POST /groups/join` with `{ "route_id": "<id>", "username": "<user>" }` to join a trail group.
-- `POST /groups/leave` with `{ "route_id": "<id>", "username": "<user>" }` to leave it.
-- `GET /groups/{route_id}/members` to see who’s going.
-- `GET /groups/{route_id}/messages` to pull the current group chat log.
-- `POST /groups/message` with `{ "route_id": ..., "username": ..., "content": ... }` to chat with that group.
+Each route functions as a lightweight group chat.
 
-The Streamlit UI exposes these controls in the left sidebar; once a user joins a trail, the sidebar shows the current roster for that group chat.
+- Join:
+  ```
+  POST /groups/join
+  ```
+- Leave:
+  ```
+  POST /groups/leave
+  ```
+- Members:
+  ```
+  GET /groups/{route_id}/members
+  ```
+- Chat messages:
+  ```
+  GET  /groups/{route_id}/messages
+  POST /groups/message
+  ```
 
-## Weather Data
-- `/weather/snapshot` now calls the Open-Meteo API via `openmeteo_requests`, so no API key is required. Latitude/longitude are taken from the selected route (or default to Los Angeles if absent), cached for an hour, and summarized into `temp_c`, precipitation probability, and simple lightning/fire risk hints.
-- Weather details feed the backend’s reasoning (and HikeBot’s replies) rather than a standalone UI widget.
+## Friend System
+HikeBot includes a simple friend system:
 
-## Syncing Routes from Trailforks
-1. Request a Trailforks API key (Pinkbike account required) and set it locally:  
-   `export TRAILFORKS_API_KEY=your-key`.
-2. Fetch routes for a region and store them under `backend/data/trailforks_routes.json`:  
-   ```bash
-   cd backend
-   python fetch_trailforks_routes.py --region-id 1234 --limit 50
-   ```
-3. Restart the API. `seed_routes.get_seed_routes()` now prefers the freshly-exported JSON over the baked-in fixtures, so the `/routes` endpoint immediately serves real data.
+- Add friends by **friend code**
+- Friend list displayed in `ui_friends.py`
 
-> Tip: rerun the script whenever you need fresh mileage/elevation info; commit the JSON only if you want deterministic seeds for the milestone.
+Core endpoints:
+```
+POST /social/friends/send_request
+POST /social/friends/accept
+GET  /social/friends/list
+GET  /social/friends/requests
+```
+
+## Groups & Group Chat
+HikeBot supports custom groups and chat rooms backed by Postgres.
+
+Main operations:
+```
+POST /social/groups/create
+POST /social/groups/join
+POST /social/groups/leave
+GET  /social/groups/{group_id}/members
+GET  /social/groups/my_groups
+```
+
+Group chat:
+```
+GET  /social/groups/{group_id}/messages
+POST /social/groups/message
+```
+
+Messages include:
+- sender name
+- role (user/assistant)
+- content
+- timestamp
+
+Rendered via `ui_chat.py`.
+
+## AI Planning Chat
+A separate personal chat experience on the home page (`ui_home.py`):
+
+```
+POST /chat
+```
+
+Used for:
+- Trail suggestions
+- Weather summaries
+- Gear suggestions
+- Safety tips
+
+## Weather System
+Weather is fetched via the Open-Meteo API (no key needed).  
+Results are cached for 1 hour and include:
+
+- temperature
+- precipitation probability
+- basic safety hints (rain / storm / fire-risk)
+
+---
+
+Future milestones will include richer group management, improved real-time chat, smarter packing checklists, and enhanced AI-assisted trip planning.
