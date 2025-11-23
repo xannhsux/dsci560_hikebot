@@ -39,8 +39,8 @@ def auth_request(path: str, username: str, password: str, user_code: str | None 
     """
     payload: Dict[str, Any] = {"username": username, "password": password}
 
-    if path == "/auth/signup" and user_code:
-        payload["user_code"] = user_code
+    if path == "/auth/signup":
+        payload["user_code"] = user_code or ""
 
     r = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=15)
     if r.status_code != 200:

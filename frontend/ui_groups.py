@@ -6,12 +6,23 @@ from typing import List, Dict, Any
 
 
 def render_create_group_page(username: str) -> None:
-    st.subheader("Create a hiking group")
+    st.markdown(
+        """
+        <div class="hero">
+          <div class="pill">Summit together</div>
+          <h3 style="margin:6px 0;">Create a hiking group</h3>
+          <p style="margin:0;color:var(--muted);">Name your crew, invite partners by Hike ID, and jump straight into chat.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Back Button
     if st.button("← Back to home", key="back_from_create_group"):
         st.session_state.view_mode = "home"
         st.rerun()
+
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
 
     # ---- Fetch friends ----
     try:
@@ -60,3 +71,5 @@ def render_create_group_page(username: str) -> None:
 
         except Exception as exc:
             st.error(f"Unable to create group: {exc}")
+
+    st.markdown("</div>", unsafe_allow_html=True)

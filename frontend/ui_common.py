@@ -15,7 +15,9 @@ def render_message_bubble(msg: Dict[str, Any]) -> None:
     is_me = sender == st.session_state.current_user
 
     align = "flex-end" if is_me else "flex-start"
-    bubble_color = "#DCF8C6" if is_me else "#FFFFFF"
+    bubble_color = "#e8f4ec" if is_me else "#ffffff"
+    border = "1px solid rgba(31,122,80,0.35)" if is_me else "1px solid rgba(31,122,80,0.12)"
+    text_color = "#123124" if is_me else "#123124"
 
     time_str = ""
     if ts:
@@ -31,11 +33,16 @@ def render_message_bubble(msg: Dict[str, Any]) -> None:
         f"""
         <div style="display:flex;justify-content:{align};margin-bottom:10px;">
           <div style="max-width:75%;font-size:14px;">
-            <div style="color:#888;font-size:12px;margin-bottom:2px;">
+            <div style="color:#5e7a68;font-size:12px;margin-bottom:2px;">
               {s_sender} · {time_str}
             </div>
-            <div style="background:{bubble_color};padding:10px 14px;
-                        border-radius:16px;box-shadow:0 1px 2px rgba(0,0,0,0.1);">
+            <div style="
+                        background:{bubble_color};
+                        padding:10px 14px;
+                        border-radius:14px;
+                        border:{border};
+                        color:{text_color};
+                        box-shadow:0 8px 18px rgba(0,0,0,0.08);">
               {s_content}
             </div>
           </div>

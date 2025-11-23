@@ -12,7 +12,16 @@ from api import (
 
 
 def render_add_friend_page(username: str) -> None:
-    st.subheader("Add & Manage Friends")
+    st.markdown(
+        """
+        <div class="hero">
+          <div class="pill">Trail partners</div>
+          <h3 style="margin:6px 0;">Add & manage friends</h3>
+          <p style="margin:0;color:var(--muted);">Share your Hike ID to build your crew and drop into group chats faster.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Back Button
     if st.button("← Back to home", key="back_from_add_friend"):
@@ -20,6 +29,7 @@ def render_add_friend_page(username: str) -> None:
         st.rerun()
 
     # ---- Add Friend ----
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.markdown("### Add friend")
 
     friend_code = st.text_input(
@@ -40,9 +50,10 @@ def render_add_friend_page(username: str) -> None:
             except Exception as exc:
                 st.error(f"Unable to send friend request: {exc}")
 
-    st.markdown("---")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Incoming Requests ----
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.markdown("### Incoming friend requests")
 
     try:
@@ -72,9 +83,10 @@ def render_add_friend_page(username: str) -> None:
                     except Exception as exc:
                         st.error(f"Unable to accept request: {exc}")
 
-    st.markdown("---")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Friends ----
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.markdown("### Your friends")
 
     try:

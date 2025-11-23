@@ -175,6 +175,7 @@ class ChatMessage(BaseModel):
 class SignupRequest(BaseModel):
     username: str
     password: str
+    user_code: str
 
 
 class LoginRequest(BaseModel):
