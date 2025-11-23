@@ -251,12 +251,44 @@ class FriendSummary(BaseModel):
     id: int
     username: str
     user_code: str
+    
+
+class FriendRequestItem(BaseModel):
+    id: int
+    from_user_id: int
+    from_username: str
+    from_user_code: str
+    created_at: datetime
+
+
+class FriendRequestsResponse(BaseModel):
+    requests: List[FriendRequestItem]
+
+
+class FriendAcceptRequest(BaseModel):
+    request_id: int
+
+
+
 
 
 class GroupCreateRequest(BaseModel):
     name: str
     description: Optional[str] = None
-    # 之后如果要“创建群时直接加成员”，可以在这里加 member_codes: List[str] = []
+
+    # 前端传过来的成员列表（好友 + 陌生人），用 user_code 标识
+    # 例如：["ABCD1234", "FRIEND5678"]
+    members: List[str] = Field(
+        default_factory=list,
+        description="User codes of initial members (friends or strangers)",
+    )
+
+    # 为了兼容你前面可能写过的 payload，如果前端用的是 'member_codes'
+    member_codes: List[str] = Field(
+        default_factory=list,
+        description="Alias of members; merged with 'members'",
+    )
+
 
 
 class GroupSummary(BaseModel):

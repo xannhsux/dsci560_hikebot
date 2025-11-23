@@ -49,8 +49,9 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title="HikeBot Backend")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# 挂载子路由
+
 app.include_router(auth_router)
+app.include_router(social_router) 
 
 
 

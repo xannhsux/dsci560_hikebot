@@ -99,7 +99,7 @@ def render_sidebar_tabs(username: str) -> None:
     # ---- Friends tab ----
     with tab_friends:
         try:
-            friends = fetch_friends(username)
+            friends = fetch_friends()
         except Exception as exc:
             friends = []
             st.error(f"Unable to load friends: {exc}")
@@ -121,7 +121,7 @@ def render_sidebar_tabs(username: str) -> None:
     # ---- Groups tab ----
     with tab_groups:
         try:
-            groups = fetch_groups(username)
+            groups = fetch_groups()
         except Exception as exc:
             groups = []
             st.error(f"Unable to load groups: {exc}")
@@ -173,9 +173,11 @@ def main() -> None:
             render_create_group_page(user)
 
         else:
-            # Fallback to home if unknown
+    # fallback
+            st.write("Unknown view mode, going back to home.")
             st.session_state.view_mode = "home"
-            render_home_page(user)
+            st.rerun()
+
 
 
     with col_members:

@@ -9,7 +9,7 @@ from api import (
     send_group_message,
     fetch_group_members,
     join_group,
-    leave_group,        # ✅ 新增：记得把 leave_group 引进来
+    leave_group,
     ask_ai_trail,
 )
 from state import ensure_members_cached, in_group
@@ -32,18 +32,18 @@ def render_members_panel(group_id: str, username: str) -> None:
     members = ensure_members_cached(group_id, fetch_group_members)
 
     if members:
-        for name in members:  # ["alice", "bob"]
+        for name in members:
             st.markdown(f"- {name}")
     else:
         st.caption("No members yet.")
 
     st.markdown("---")
 
-    # ✅ 这里统一使用 username 传给 join_group / leave_group
+    # ---- Join/Leave group ----
     if in_group(group_id, username, fetch_group_members):
         if st.button("Quit this group", key="quit-current-group"):
             try:
-                members = leave_group(group_id, username)  # ✅ 传 group_id + username
+                members = leave_group(group_id)
                 st.session_state.group_members[group_id] = members
                 st.session_state.active_group = None
                 st.session_state.view_mode = "home"
@@ -54,7 +54,7 @@ def render_members_panel(group_id: str, username: str) -> None:
     else:
         if st.button("Join this group", key="join-current-group"):
             try:
-                members = join_group(group_id, username)  # ✅ 同样传两个参数
+                members = join_group(group_id)
                 st.session_state.group_members[group_id] = members
                 st.session_state.active_group = group_id
                 st.success("Joined group.")
@@ -65,11 +65,13 @@ def render_members_panel(group_id: str, username: str) -> None:
 
 def render_chat_page(username: str) -> None:
     group_id = st.session_state.active_group
+
+    # Not in group yet
     if not in_group(group_id, username, fetch_group_members):
         st.warning("You are not in this group yet. Join to chat.")
         if st.button("Join this group", key="join-from-chat"):
             try:
-                members = join_group(group_id, username)  # ✅ 加上 username
+                members = join_group(group_id)
                 st.session_state.group_members[group_id] = members
                 st.success("Joined group.")
                 st.rerun()
@@ -77,6 +79,7 @@ def render_chat_page(username: str) -> None:
                 st.error(f"Unable to join group: {exc}")
         return
 
+    # ---- Header ----
     header = st.container()
     with header:
         c1, c2 = st.columns([3, 1])
@@ -85,24 +88,12 @@ def render_chat_page(username: str) -> None:
         with c2:
             if st.button("Ask AI for Trail", key="ask-ai-trail"):
                 try:
-                    ask_ai_trail(group_id, username)
+                    ask_ai_trail(group_id)
                     st.success("AI route request sent.")
                 except Exception as exc:
                     st.error(f"Unable to ask AI: {exc}")
 
-    # 这里再检查一遍是否在群里（保留你的原逻辑，只是改参数）
-    if not in_group(group_id, username, fetch_group_members):
-        st.warning("You are not in this group yet. Join to chat.")
-        if st.button("Join this group", key="join-from-chat-2"):
-            try:
-                members = join_group(group_id, username)  # ✅ 同样补上 username
-                st.session_state.group_members[group_id] = members
-                st.success("Joined group.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Unable to join group: {exc}")
-        return
-
+    # ---- Chat Messages ----
     chat_box = st.container()
     with chat_box:
         try:
@@ -118,11 +109,13 @@ def render_chat_page(username: str) -> None:
                 msg = normalize_group_message(raw)
                 render_message_bubble(msg)
 
+    # ---- Send Message ----
     text = st.chat_input("Share an update with the group…", key="group_chat_input")
     if text:
         try:
-            send_group_message(group_id, username, text)
+            send_group_message(group_id, text)
         except Exception as exc:
             st.error(f"Unable to send message: {exc}")
             return
+
         st.rerun()

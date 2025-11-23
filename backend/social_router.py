@@ -11,6 +11,8 @@ from models import (
     AuthUser,
     FriendAddRequest,
     FriendSummary,
+    FriendRequestsResponse,
+    FriendAcceptRequest,
     GroupCreateRequest,
     GroupSummary,
     GroupDetailResponse,
@@ -28,38 +30,11 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 # ---------- 好友 ----------
 
-@router.post("/friends/add", response_model=FriendSummary)
-def add_friend(payload: FriendAddRequest, current: AuthUser = Depends(get_current_user)) -> FriendSummary:
-    # 找到这个 friend_code 对应的用户
-    friend = fetch_one(
-        "SELECT id, username, user_code FROM users WHERE user_code = %(code)s",
-        {"code": payload.friend_code},
-    )
-    if not friend:
-        raise HTTPException(404, "User not found")
-    if friend["id"] == current.id:
-        raise HTTPException(400, "Cannot add yourself")
-
-    # 双向好友关系（插入前检查）
-    for (u, f) in [(current.id, friend["id"]), (friend["id"], current.id)]:
-        exists = fetch_one(
-            "SELECT id FROM friendships WHERE user_id = %(u)s AND friend_id = %(f)s",
-            {"u": u, "f": f},
-        )
-        if not exists:
-            execute(
-                """
-                INSERT INTO friendships (user_id, friend_id)
-                VALUES (%(u)s, %(f)s)
-                """,
-                {"u": u, "f": f},
-            )
-
-    return FriendSummary(id=friend["id"], username=friend["username"], user_code=friend["user_code"])
-
-
 @router.get("/friends", response_model=List[FriendSummary])
 def list_friends(current: AuthUser = Depends(get_current_user)) -> List[FriendSummary]:
+    """
+    返回当前用户的好友列表。
+    """
     rows = fetch_all(
         """
         SELECT u.id, u.username, u.user_code
@@ -73,10 +48,210 @@ def list_friends(current: AuthUser = Depends(get_current_user)) -> List[FriendSu
     return [FriendSummary(**r) for r in rows]
 
 
+
+def _ensure_friendship_pair(user_id: int, friend_id: int) -> None:
+    """
+    确保 user_id 和 friend_id 之间在 friendships 表中是双向关系。
+    已存在就跳过，不存在就插入。
+    """
+    for (u, f) in [(user_id, friend_id), (friend_id, user_id)]:
+        exists = fetch_one(
+            "SELECT id FROM friendships WHERE user_id = %(u)s AND friend_id = %(f)s",
+            {"u": u, "f": f},
+        )
+        if not exists:
+            execute(
+                """
+                INSERT INTO friendships (user_id, friend_id)
+                VALUES (%(u)s, %(f)s)
+                """,
+                {"u": u, "f": f},
+            )
+
+@router.post("/friends/add", response_model=FriendSummary)
+def add_friend(payload: FriendAddRequest, current: AuthUser = Depends(get_current_user)) -> FriendSummary:
+    """
+    发送好友请求：
+    - 如果对方不存在：404
+    - 如果是自己：400
+    - 如果已经是好友：400
+    - 如果对方已经向你发过 pending 请求：自动接受（直接变好友）
+    - 否则：插入一条新的 pending friend_requests 记录
+    """
+    # 通过 friend_code 找到对方
+    friend = fetch_one(
+        "SELECT id, username, user_code FROM users WHERE user_code = %(code)s",
+        {"code": payload.friend_code},
+    )
+    if not friend:
+        raise HTTPException(404, "User not found")
+
+    if friend["id"] == current.id:
+        raise HTTPException(400, "Cannot add yourself")
+
+    # 已经是好友？
+    existing_friendship = fetch_one(
+        """
+        SELECT id FROM friendships
+        WHERE user_id = %(u)s AND friend_id = %(f)s
+        """,
+        {"u": current.id, "f": friend["id"]},
+    )
+    if existing_friendship:
+        raise HTTPException(400, "You are already friends")
+
+    # 是否已经存在 pending 请求（包括两种方向）
+    existing_req = fetch_one(
+        """
+        SELECT id, from_user_id, to_user_id, status
+        FROM friend_requests
+        WHERE
+          (
+            (from_user_id = %(u)s AND to_user_id = %(f)s)
+            OR
+            (from_user_id = %(f)s AND to_user_id = %(u)s)
+          )
+          AND status = 'pending'
+        """,
+        {"u": current.id, "f": friend["id"]},
+    )
+
+    # 对方已经发给你 pending 请求：那这次 add 直接视为 "接受"
+    if existing_req and existing_req["from_user_id"] == friend["id"] and existing_req["to_user_id"] == current.id:
+        _ensure_friendship_pair(current.id, friend["id"])
+        execute(
+            """
+            UPDATE friend_requests
+            SET status = 'accepted', responded_at = NOW()
+            WHERE
+              (
+                (from_user_id = %(u)s AND to_user_id = %(f)s)
+                OR
+                (from_user_id = %(f)s AND to_user_id = %(u)s)
+              )
+              AND status = 'pending'
+            """,
+            {"u": current.id, "f": friend["id"]},
+        )
+        return FriendSummary(id=friend["id"], username=friend["username"], user_code=friend["user_code"])
+
+    # 已经有 pending 请求（自己已经发过或者两边奇怪状态）
+    if existing_req:
+        raise HTTPException(400, "Friend request already pending")
+
+    # 插入新的 pending 请求
+    execute(
+        """
+        INSERT INTO friend_requests (from_user_id, to_user_id, status)
+        VALUES (%(from_id)s, %(to_id)s, 'pending')
+        """,
+        {"from_id": current.id, "to_id": friend["id"]},
+    )
+
+    # 前端已经有 UI 展示 pending，所以直接返回对方的基本信息就好
+    return FriendSummary(
+        id=friend["id"],
+        username=friend["username"],
+        user_code=friend["user_code"],
+    )
+
+
+@router.get("/friends/requests", response_model=FriendRequestsResponse)
+def get_friend_requests(
+    current: AuthUser = Depends(get_current_user),
+    username: str | None = None,  # 为了兼容前端传 ?username=xxx，但实际不用
+) -> FriendRequestsResponse:
+    """
+    返回当前用户收到的所有 pending 好友请求。
+    """
+    rows = fetch_all(
+        """
+        SELECT
+            fr.id,
+            fr.from_user_id,
+            u.username AS from_username,
+            u.user_code AS from_user_code,
+            fr.created_at
+        FROM friend_requests fr
+        JOIN users u ON u.id = fr.from_user_id
+        WHERE fr.to_user_id = %(uid)s
+          AND fr.status = 'pending'
+        ORDER BY fr.created_at DESC
+        """,
+        {"uid": current.id},
+    )
+
+    requests = [
+        {
+            "id": r["id"],
+            "from_user_id": r["from_user_id"],
+            "from_username": r["from_username"],
+            "from_user_code": r["from_user_code"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+    return FriendRequestsResponse(requests=requests)
+@router.post("/friends/accept")
+def accept_friend_request(
+    payload: FriendAcceptRequest,
+    current: AuthUser = Depends(get_current_user),
+):
+    """
+    接受一条好友请求：
+    - 只能接受发给自己的 pending 请求
+    - 接受后写入 friendships（双向）
+    - 将 friend_requests 这一对的 pending 记录标记为 accepted
+    """
+    req = fetch_one(
+        """
+        SELECT id, from_user_id, to_user_id, status
+        FROM friend_requests
+        WHERE id = %(rid)s
+        """,
+        {"rid": payload.request_id},
+    )
+
+    if not req:
+        raise HTTPException(404, "Friend request not found")
+
+    if req["to_user_id"] != current.id:
+        raise HTTPException(403, "You cannot accept this request")
+
+    if req["status"] != "pending":
+        raise HTTPException(400, "Request is not pending")
+
+    from_id = req["from_user_id"]
+    to_id = req["to_user_id"]
+
+    # 建立双向好友关系
+    _ensure_friendship_pair(from_id, to_id)
+
+    # 把这对用户之间所有 pending 请求都标为 accepted
+    execute(
+        """
+        UPDATE friend_requests
+        SET status = 'accepted', responded_at = NOW()
+        WHERE
+          (
+            (from_user_id = %(u)s AND to_user_id = %(f)s)
+            OR
+            (from_user_id = %(f)s AND to_user_id = %(u)s)
+          )
+          AND status = 'pending'
+        """,
+        {"u": from_id, "f": to_id},
+    )
+
+    return {"message": "Friend request accepted"}
+
+
 # ---------- Groups ----------
 
 @router.post("/groups", response_model=GroupSummary)
 def create_group(payload: GroupCreateRequest, current: AuthUser = Depends(get_current_user)) -> GroupSummary:
+    # 1. 先创建 group 记录
     row = fetch_one_returning(
         """
         INSERT INTO groups (name, description, created_by)
@@ -86,14 +261,57 @@ def create_group(payload: GroupCreateRequest, current: AuthUser = Depends(get_cu
         {"name": payload.name, "desc": payload.description, "uid": current.id},
     )
 
-    # 创建者自动成为 owner
+    group_id = row["id"]
+
+    # 2. 创建者自动成为 owner
     execute(
         """
         INSERT INTO group_members (group_id, user_id, role)
         VALUES (%(gid)s, %(uid)s, 'owner')
         """,
-        {"gid": row["id"], "uid": current.id},
+        {"gid": group_id, "uid": current.id},
     )
+
+    # 3. 合并 members / member_codes（兼容前端 payload）
+    raw_codes = []
+    if payload.members:
+        raw_codes.extend(payload.members)
+    if payload.member_codes:
+        raw_codes.extend(payload.member_codes)
+
+    # 去重 + 去掉自己的 user_code
+    unique_codes = {code.strip() for code in raw_codes if code and code.strip()}
+    if current.user_code in unique_codes:
+        unique_codes.remove(current.user_code)
+
+    # 4. 通过 user_code 找到用户并加入 group_members
+    for code in unique_codes:
+        user = fetch_one(
+            "SELECT id FROM users WHERE user_code = %(code)s",
+            {"code": code},
+        )
+        if not user:
+            # 找不到这个 user_code，就先静默跳过（也可以改成 400 直接报错）
+            continue
+
+        # 是否已经在这个组里？
+        existing_member = fetch_one(
+            """
+            SELECT 1 FROM group_members
+            WHERE group_id = %(gid)s AND user_id = %(uid)s
+            """,
+            {"gid": group_id, "uid": user["id"]},
+        )
+        if existing_member:
+            continue
+
+        execute(
+            """
+            INSERT INTO group_members (group_id, user_id, role)
+            VALUES (%(gid)s, %(uid)s, 'member')
+            """,
+            {"gid": group_id, "uid": user["id"]},
+        )
 
     return GroupSummary(
         id=row["id"],
@@ -101,7 +319,6 @@ def create_group(payload: GroupCreateRequest, current: AuthUser = Depends(get_cu
         description=row["description"],
         created_at=row["created_at"],
     )
-
 
 @router.get("/groups", response_model=List[GroupSummary])
 def list_my_groups(current: AuthUser = Depends(get_current_user)) -> List[GroupSummary]:

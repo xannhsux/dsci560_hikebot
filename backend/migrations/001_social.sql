@@ -44,3 +44,17 @@ CREATE TABLE IF NOT EXISTS group_messages (
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- 好友请求：用来支持 "pending" 流程
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id SERIAL PRIMARY KEY,
+    from_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending / accepted / declined
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    responded_at TIMESTAMPTZ
+);
+
+-- 可选索引：加快查询当前用户的待处理请求
+CREATE INDEX IF NOT EXISTS idx_friend_requests_to_user
+    ON friend_requests(to_user_id, status);
