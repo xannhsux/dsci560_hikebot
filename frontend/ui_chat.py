@@ -17,34 +17,48 @@ from ui_common import render_message_bubble
 
 
 def normalize_group_message(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize backend group message payload into the shape expected by
+    render_message_bubble.
+    """
     sender = raw.get("sender") or raw.get("sender_display") or "Unknown"
     content = raw.get("content", "")
     ts = raw.get("timestamp") or raw.get("created_at")
     return {"sender": sender, "content": content, "timestamp": ts}
 
 
-def render_members_panel(group_id: str, username: str) -> None:
+def render_members_panel() -> None:
+    """Sidebar panel: current group's member list + join/leave controls.
+
+    Uses st.session_state.active_group to know which group is active.
+    """
     st.subheader("Group Members")
+
+    group_id = st.session_state.get("active_group")
     if not group_id:
         st.caption("No group selected.")
         return
 
-    members = ensure_members_cached(group_id, fetch_group_members)
+    username = st.session_state.get("user") or st.session_state.get("current_user")
 
+    # Cache members in session_state.group_members to avoid repeated calls.
+    members = ensure_members_cached(group_id, fetch_group_members)
     if members:
-        for name in members:
-            st.markdown(f"- {name}")
+        for m in members:
+            if m == username:
+                st.markdown(f"- **{m}** (you)")
+            else:
+                st.markdown(f"- {m}")
     else:
         st.caption("No members yet.")
 
     st.markdown("---")
 
-    # ---- Join/Leave group ----
+    # Join / leave controls
     if in_group(group_id, username, fetch_group_members):
         if st.button("Quit this group", key="quit-current-group"):
             try:
-                members = leave_group(group_id)
-                st.session_state.group_members[group_id] = members
+                new_members = leave_group(group_id)
+                st.session_state.group_members[group_id] = new_members
                 st.session_state.active_group = None
                 st.session_state.view_mode = "home"
                 st.success("You left the group.")
@@ -54,8 +68,8 @@ def render_members_panel(group_id: str, username: str) -> None:
     else:
         if st.button("Join this group", key="join-current-group"):
             try:
-                members = join_group(group_id)
-                st.session_state.group_members[group_id] = members
+                new_members = join_group(group_id)
+                st.session_state.group_members[group_id] = new_members
                 st.session_state.active_group = group_id
                 st.success("Joined group.")
                 st.rerun()
@@ -64,22 +78,17 @@ def render_members_panel(group_id: str, username: str) -> None:
 
 
 def render_chat_page(username: str) -> None:
-    group_id = st.session_state.active_group
+    """Main group chat view.
 
-    # Not in group yet
-    if not in_group(group_id, username, fetch_group_members):
-        st.warning("You are not in this group yet. Join to chat.")
-        if st.button("Join this group", key="join-from-chat"):
-            try:
-                members = join_group(group_id)
-                st.session_state.group_members[group_id] = members
-                st.success("Joined group.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Unable to join group: {exc}")
+    - Uses st.session_state.active_group as the current group.
+    - Only allows sending messages if the user has joined the group.
+    """
+    group_id = st.session_state.get("active_group")
+    if not group_id:
+        st.info("Select a group from the Home page to start chatting.")
         return
 
-    # ---- Header ----
+    # Header with AI helper
     header = st.container()
     with header:
         c1, c2 = st.columns([3, 1])
@@ -89,11 +98,24 @@ def render_chat_page(username: str) -> None:
             if st.button("Ask AI for Trail", key="ask-ai-trail"):
                 try:
                     ask_ai_trail(group_id)
-                    st.success("AI route request sent.")
+                    st.success("AI route recommendation request sent to the group.")
                 except Exception as exc:
                     st.error(f"Unable to ask AI: {exc}")
 
-    # ---- Chat Messages ----
+    # Ensure the user is in this group before allowing chat
+    if not in_group(group_id, username, fetch_group_members):
+        st.warning("You are not in this group yet. Join to chat.")
+        if st.button("Join this group", key="join-from-chat"):
+            try:
+                new_members = join_group(group_id)
+                st.session_state.group_members[group_id] = new_members
+                st.success("Joined group.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Unable to join group: {exc}")
+        return
+
+    # Chat history
     chat_box = st.container()
     with chat_box:
         try:
@@ -109,7 +131,7 @@ def render_chat_page(username: str) -> None:
                 msg = normalize_group_message(raw)
                 render_message_bubble(msg)
 
-    # ---- Send Message ----
+    # Input box at the bottom
     text = st.chat_input("Share an update with the group…", key="group_chat_input")
     if text:
         try:
@@ -117,5 +139,4 @@ def render_chat_page(username: str) -> None:
         except Exception as exc:
             st.error(f"Unable to send message: {exc}")
             return
-
         st.rerun()
