@@ -97,6 +97,7 @@ def main() -> None:
         return
 
     render_header(username)
+    # 调用新的 render_home_page，它现在集成了自动刷新和卡片渲染
     render_home_page(username)
 
 if __name__ == "__main__":

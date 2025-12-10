@@ -45,11 +45,12 @@ services:
       - "6379:6379"
 
   ui:
-    image: python:3.11-slim
+    # 👇 改动 1：使用本地构建，而不是直接拉取 python 镜像
+    build: ./frontend
+    container_name: dsci560_hikebot-ui-1
     working_dir: /app
-    command: >
-      bash -c "pip install --no-cache-dir -r requirements.txt
-      && streamlit run app.py --server.port 8501 --server.address 0.0.0.0"
+    # 👇 改动 2：命令只负责运行，不再负责安装。加上 fileWatcherType=poll 确保代码热更新生效
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.fileWatcherType=poll
     volumes:
       - ./frontend:/app
     env_file:
@@ -60,6 +61,5 @@ services:
       - "8501:8501"
     depends_on:
       - api
-
 volumes:
   postgres-data:

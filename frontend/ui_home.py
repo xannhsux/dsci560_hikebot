@@ -1,8 +1,11 @@
-# frontend/ui_home.py (请完全覆盖)
 from __future__ import annotations
 import streamlit as st
 from datetime import datetime as _dt
 from typing import Dict, Any, List
+from streamlit_autorefresh import st_autorefresh  # ✅ 关键引入：自动刷新
+
+# 从 ui_chat 导入我们刚才写好的高级渲染函数
+from ui_chat import render_rich_message, normalize_group_message 
 
 from api import (
     fetch_groups, create_group, join_group, leave_group, 
@@ -11,18 +14,15 @@ from api import (
     fetch_friends, fetch_friend_requests, send_friend_request, accept_friend_request, get_or_create_dm,
     send_planning_message,
     invite_group_member, kick_group_member,
-    remove_friend # New Import
+    remove_friend
 )
 from state import in_group
 from ui_common import render_message_bubble
 
-def normalize_group_message(raw: Dict[str, Any]) -> Dict[str, Any]:
-    sender = raw.get("sender") or raw.get("sender_display") or "Unknown"
-    content = raw.get("content", "")
-    ts = raw.get("timestamp") or raw.get("created_at")
-    return {"sender": sender, "content": content, "timestamp": ts}
+# (删除了本地的 normalize_group_message，直接使用 ui_chat 的版本以保持一致)
 
 def render_social_sidebar(username: str):
+    """渲染左侧的好友/群组导航栏"""
     c_ref, c_prof = st.columns([1, 3])
     with c_ref:
         if st.button("🔄", help="Refresh Data"): st.rerun()
@@ -121,10 +121,21 @@ def render_social_sidebar(username: str):
                 except Exception as e: st.error(f"Failed: {e}")
 
 def render_ai_interface(username: str):
+    """首页的 AI 助手界面 (非群聊)"""
     st.title("🤖 Trail Assistant")
     st.caption("Ask me about trails, weather, gear, or safety.")
+    
+    # 这里也可以加上自动刷新，以防 AI 回复慢
+    st_autorefresh(interval=5000, key="ai_home_refresh")
+
     with st.container(border=True, height=500):
-        for msg in st.session_state.messages: render_message_bubble(msg)
+        for msg in st.session_state.messages: 
+            # 尝试用 render_rich_message 渲染，支持卡片
+            try:
+                render_rich_message(msg)
+            except:
+                render_message_bubble(msg)
+
     prompt = st.chat_input("Ask HikeBot...", key="ai_chat_input")
     if prompt:
         st.session_state.messages.append({"sender": username, "role": "user", "content": prompt, "timestamp": _dt.utcnow().isoformat()})
@@ -139,7 +150,12 @@ def process_ai_response():
         st.rerun()
 
 def render_group_interface(group_id: str, username: str):
-    # 1. Check if this is a DM or Group
+    """渲染主群聊界面 (集成自动刷新 + 卡片消息)"""
+    
+    # 🔥 核心功能 1: 自动刷新 (每 5 秒拉取最新消息)
+    st_autorefresh(interval=5000, key=f"chat_refresh_{group_id}")
+
+    # 1. 判断是私聊 (DM) 还是群聊
     is_dm = False
     group_name = "Chat Room"
     try:
@@ -170,7 +186,10 @@ def render_group_interface(group_id: str, username: str):
             st.markdown("#### ✨ AI Copilot")
             st.caption("I'm listening for your plans...")
             if st.button("🗺 Recommend Trails", use_container_width=True):
+                # 触发后台任务
                 ask_ai_recommend(group_id)
+                st.toast("AI is thinking... wait a few seconds!")
+                # 注意：这里不需要手动等待，st_autorefresh 会自动刷出结果
                 st.rerun()
 
         st.markdown("---")
@@ -195,11 +214,10 @@ def render_group_interface(group_id: str, username: str):
                     if is_dm:
                         if st.button("🚫 Delete Friend", key=f"del_{m['user_id']}", type="primary"):
                             remove_friend(m["user_id"])
-                            # Also kick from group to close chat effect
                             try: kick_group_member(group_id, m["user_id"])
                             except: pass
                             st.toast(f"Friend {m['username']} removed.")
-                            st.session_state.active_group = None # Exit chat
+                            st.session_state.active_group = None 
                             st.rerun()
                     else:
                         if st.button("Kick", key=f"kick_{m['user_id']}", type="primary"):
@@ -220,11 +238,27 @@ def render_group_interface(group_id: str, username: str):
         with st.container(border=True, height=550):
             try: raws = fetch_group_messages(group_id)
             except: raws = []
-            if not raws: st.caption("Start the conversation!")
-            for raw in raws: render_message_bubble(normalize_group_message(raw))
+            
+            if not raws: 
+                st.caption("Start the conversation!")
+            
+            for raw in raws:
+                # 🔥 核心功能 2: 使用 ui_chat 的逻辑渲染精美卡片
+                msg = normalize_group_message(raw)
+                render_rich_message(msg)
 
-        current_members = [m["username"] for m in members]
-        if st.session_state.get("user") not in current_members:
+        current_members = [m["username"] for m in members] if 'members' in locals() else []
+        username_val = st.session_state.get("user")
+        
+        # 简单的权限检查，防止未加入者发言
+        is_member = False
+        if members:
+            for m in members:
+                if m['username'] == username_val:
+                    is_member = True
+                    break
+
+        if not is_member and not is_dm:
              if st.button("Join this group", type="primary"): join_group(group_id); st.rerun()
         else:
              if st.chat_input(f"Message {group_name}...", key=f"chat_in_{group_id}"):

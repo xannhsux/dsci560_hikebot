@@ -1,6 +1,6 @@
 # backend/social_router.py
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -9,20 +9,43 @@ from sqlalchemy.orm import Session
 # --- Internal Imports ---
 from auth_router import get_current_user
 from pg_db import fetch_all, fetch_one, fetch_one_returning, execute, get_cursor
-from db import get_db  # 需要确保 backend/db.py 存在并提供 get_db 依赖
+# 引入 SessionLocal 用于后台任务创建独立连接
+from db import get_db, SessionLocal 
 from models import (
-    AuthUser, FriendAddRequest, FriendRequestsResponse, FriendRequestItem, FriendAcceptRequest, FriendSummary,
+    AuthUser, FriendAddRequest, FriendRequestItem, FriendAcceptRequest, FriendSummary,
     GroupCreateRequest, GroupSummary, GroupMemberInfo, GroupMessageModel, MessageCreateRequest,
     DMRequest, InviteRequest, KickRequest, RemoveFriendRequest
 )
 
-# --- AI Services ---
-import ai_service
-from auto_planner_service import AutoPlannerService  # 引入新的自动规划服务
+# --- AI Service ---
+from auto_planner_service import AutoPlannerService
 
 router = APIRouter(prefix="/social", tags=["social"])
 
-# --- Friends ---
+# ==========================================
+# 🛑 AI 后台任务包装器 (核心修复)
+# ==========================================
+async def run_ai_task_in_background(group_id: str, content: str):
+    """
+    在后台运行 AI 逻辑。
+    必须手动创建 SessionLocal()，因为 FastAPI 的 Depends(get_db) 会在请求结束时关闭连接。
+    """
+    print(f"🔄 [Background] Starting AI task for Group {group_id}...")
+    db = SessionLocal() # 1. 创建独立连接
+    try:
+        service = AutoPlannerService(db)
+        # 2. 执行流水线 (意图识别 -> 查库 -> 生成 -> 存库)
+        await service.run_pipeline(chat_id=group_id, user_message=content)
+        print(f"✅ [Background] AI task finished for Group {group_id}")
+    except Exception as e:
+        print(f"❌ [Background] AI task failed: {e}")
+    finally:
+        db.close() # 3. 务必关闭，防止连接泄漏
+
+# ==========================================
+# FRIENDS (好友系统)
+# ==========================================
+
 @router.get("/friends", response_model=Dict[str, List[FriendSummary]])
 def list_friends(u: AuthUser = Depends(get_current_user)):
     rows = fetch_all("SELECT u.id, u.username, u.user_code FROM friendships f JOIN users u ON f.friend_id = u.id WHERE f.user_id = %(me)s", {"me": u.id})
@@ -56,10 +79,7 @@ def accept_friend(p: FriendAcceptRequest, u: AuthUser = Depends(get_current_user
 
 @router.post("/friends/remove", response_model=Dict[str, Any])
 def remove_friend(p: RemoveFriendRequest, u: AuthUser = Depends(get_current_user)):
-    execute(
-        "DELETE FROM friendships WHERE (user_id=%(u)s AND friend_id=%(f)s) OR (user_id=%(f)s AND friend_id=%(u)s)",
-        {"u": u.id, "f": p.friend_id}
-    )
+    execute("DELETE FROM friendships WHERE (user_id=%(u)s AND friend_id=%(f)s) OR (user_id=%(f)s AND friend_id=%(u)s)", {"u": u.id, "f": p.friend_id})
     return {"message": "Friend removed"}
 
 @router.post("/friends/dm", response_model=Dict[str, Any])
@@ -75,7 +95,10 @@ def get_or_create_dm(p: DMRequest, u: AuthUser = Depends(get_current_user)):
     execute("INSERT INTO group_members (group_id, user_id, role) VALUES (%(gid)s, %(u)s, 'admin')", {"gid": gid, "u": p.friend_id})
     return {"group_id": gid, "new": True}
 
-# --- GROUPS ---
+# ==========================================
+# GROUPS (群组系统)
+# ==========================================
+
 @router.get("/groups", response_model=Dict[str, List[GroupSummary]])
 def list_groups(u: AuthUser = Depends(get_current_user)):
     rows = fetch_all("SELECT g.id, g.name, g.description, g.created_at FROM groups g JOIN group_members gm ON g.id=gm.group_id WHERE gm.user_id=%(u)s ORDER BY g.created_at DESC", {"u": u.id})
@@ -127,39 +150,27 @@ def get_msgs(group_id: UUID, u: AuthUser = Depends(get_current_user)):
     rows = fetch_all("SELECT id, group_id, sender_display as sender, role, content, created_at FROM group_messages WHERE group_id=%(gid)s ORDER BY created_at ASC LIMIT 100", {"gid": str(group_id)})
     return {"messages": [GroupMessageModel(**r) for r in rows]}
 
+# 🔥🔥🔥 核心发送接口 (HTTP Trigger) 🔥🔥🔥
 @router.post("/groups/{group_id}/messages", response_model=GroupMessageModel)
 def send_msg(
     group_id: UUID, 
     p: MessageCreateRequest, 
-    background_tasks: BackgroundTasks,  # <--- 新增：后台任务
-    u: AuthUser = Depends(get_current_user),
-    db_session: Session = Depends(get_db) # <--- 新增：获取 Session 供 AI Service 使用
+    background_tasks: BackgroundTasks, # 注入后台任务管理器
+    u: AuthUser = Depends(get_current_user)
 ):
-    # 1. 快速写入数据库 (使用 pg_db raw sql)
+    # 1. 快速写入用户消息 (User Message)
+    # 使用 Raw SQL 写入，速度最快，不涉及 ORM Session
     r = fetch_one_returning(
         "INSERT INTO group_messages (group_id, user_id, sender_display, role, content) VALUES (%(gid)s, %(u)s, %(s)s, 'user', %(c)s) RETURNING id, group_id, sender_display as sender, role, content, created_at",
         {"gid": str(group_id), "u": u.id, "s": u.username, "c": p.content}
     )
 
-    # 2. 触发后台 AI 观察者 (Auto Planner)
-    # 实例化 AutoPlannerService
-    planner = AutoPlannerService(db_session)
-    
-    # 异步执行 Pipeline：分析意图 -> 模糊匹配 -> 查天气 -> 生成公告
-    # 注意：我们传递 str(group_id) 和用户消息内容
+    # 2. 触发后台 AI 任务 (Fire and Forget)
+    # 使用 run_ai_task_in_background 包装器，确保有独立的 DB 连接
     background_tasks.add_task(
-        planner.run_pipeline, 
-        chat_id=str(group_id), # 传递 String 类型的 UUID
-        user_message=p.content
+        run_ai_task_in_background, 
+        group_id=str(group_id), 
+        content=p.content
     )
 
     return GroupMessageModel(**r)
-
-# --- AI (Manual Triggers) ---
-@router.post("/groups/{group_id}/ai/recommend_routes")
-def ai_recommend(group_id: UUID, u: AuthUser=Depends(get_current_user)):
-    return ai_service.generate_route_suggestions(str(group_id))
-
-@router.post("/groups/{group_id}/ai/generate_plan")
-def ai_generate_plan(group_id: UUID, u: AuthUser=Depends(get_current_user)):
-    return ai_service.generate_trip_plan(str(group_id))
