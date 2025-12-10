@@ -2,9 +2,9 @@ from __future__ import annotations
 import streamlit as st
 from datetime import datetime as _dt
 from typing import Dict, Any, List
-from streamlit_autorefresh import st_autorefresh  # ✅ 关键引入：自动刷新
+from streamlit_autorefresh import st_autorefresh  # 引入：自动刷新
 
-# 从 ui_chat 导入我们刚才写好的高级渲染函数
+# 从 ui_chat 导入我们刚才写好的核心逻辑
 from ui_chat import render_rich_message, normalize_group_message 
 
 from api import (
@@ -19,10 +19,13 @@ from api import (
 from state import in_group
 from ui_common import render_message_bubble
 
-# (删除了本地的 normalize_group_message，直接使用 ui_chat 的版本以保持一致)
-
 def render_social_sidebar(username: str):
     """渲染左侧的好友/群组导航栏"""
+    
+    # 🐞 DEBUG: 打印 active_group 的值 (在 sidebar 中显示)
+    active_group_id = st.session_state.get("active_group")
+    st.sidebar.markdown(f"**DEBUG: Active Group ID:** `{active_group_id}`")
+    
     c_ref, c_prof = st.columns([1, 3])
     with c_ref:
         if st.button("🔄", help="Refresh Data"): st.rerun()
@@ -155,21 +158,35 @@ def render_group_interface(group_id: str, username: str):
     # 🔥 核心功能 1: 自动刷新 (每 5 秒拉取最新消息)
     st_autorefresh(interval=5000, key=f"chat_refresh_{group_id}")
 
+    # 💥 核心修复：将所有 API 调用移到顶部，确保数据在布局前加载
+    members = [] 
+    all_grps = []
+    
+    # --- 提前加载数据 ---
+    try:
+        members = fetch_group_members_detailed(group_id)
+    except Exception as e:
+        st.error(f"Failed to load group members: {e}")
+        members = [] # 确保失败时是空列表
+        
+    try:
+        all_grps = fetch_groups()
+    except Exception:
+        all_grps = [] # 确保失败时是空列表
+
     # 1. 判断是私聊 (DM) 还是群聊
     is_dm = False
     group_name = "Chat Room"
-    try:
-        all_grps = fetch_groups()
-        for g in all_grps:
-            if g["id"] == group_id: 
-                group_name = g["name"]
-                if group_name.startswith("DM:"):
-                    is_dm = True
-                    group_name = group_name.replace("DM: ", "💬 ")
-                break
-    except: pass
     
-    # Header
+    for g in all_grps:
+        if g["id"] == group_id: 
+            group_name = g["name"]
+            if group_name.startswith("DM:"):
+                is_dm = True
+                group_name = group_name.replace("DM: ", "💬 ")
+            break
+    
+    # Header 
     c1, c2 = st.columns([6, 1.5])
     with c1: st.title(group_name)
     with c2:
@@ -186,53 +203,56 @@ def render_group_interface(group_id: str, username: str):
             st.markdown("#### ✨ AI Copilot")
             st.caption("I'm listening for your plans...")
             if st.button("🗺 Recommend Trails", use_container_width=True):
-                # 触发后台任务
                 ask_ai_recommend(group_id)
                 st.toast("AI is thinking... wait a few seconds!")
-                # 注意：这里不需要手动等待，st_autorefresh 会自动刷出结果
                 st.rerun()
 
         st.markdown("---")
         st.markdown("#### 👥 Members")
-        try:
-            members = fetch_group_members_detailed(group_id)
-            my_role = "member"
-            current_uid = st.session_state.get("current_user_id")
-            for m in members:
-                if m.get("user_id") == current_uid:
-                    my_role = m.get("role")
-                    break
-            
-            for m in members:
-                role_icon = "👑" if m["role"] == "admin" else "👤"
-                st.write(f"{role_icon} **{m['username']}**")
-                st.caption(f"@{m['user_code']}")
-                
-                # Logic: If Admin AND not myself
-                if my_role == "admin" and m["user_id"] != current_uid:
-                    # 🟢 UI Logic Switch: DM vs Group
-                    if is_dm:
-                        if st.button("🚫 Delete Friend", key=f"del_{m['user_id']}", type="primary"):
-                            remove_friend(m["user_id"])
-                            try: kick_group_member(group_id, m["user_id"])
-                            except: pass
-                            st.toast(f"Friend {m['username']} removed.")
-                            st.session_state.active_group = None 
-                            st.rerun()
-                    else:
-                        if st.button("Kick", key=f"kick_{m['user_id']}", type="primary"):
-                            kick_group_member(group_id, m["user_id"])
-                            st.rerun()
-                st.markdown("---")
+        
+        # 成员渲染逻辑
+        my_role = "member"
+        current_uid = st.session_state.get("current_user_id")
 
-            if not is_dm:
-                with st.expander("Invite User"):
-                    inv_code = st.text_input("User ID", key=f"inv_c_{group_id}")
-                    if st.button("Invite", key=f"do_inv_{group_id}", use_container_width=True):
-                        try: invite_group_member(group_id, inv_code); st.success("Invited!")
-                        except Exception as e: st.error(f"Error: {e}")
-        except Exception as e:
-            st.error(f"Load failed: {e}")
+        if not members:
+            st.caption("No members loaded or API failed.")
+        
+        for m in members:
+            if m.get("user_id") == current_uid:
+                my_role = m.get("role")
+                break
+        
+        for m in members:
+            role_icon = "👑" if m["role"] == "admin" else "👤"
+            st.write(f"{role_icon} **{m['username']}**")
+            st.caption(f"@{m['user_code']}")
+            
+            # Logic: If Admin AND not myself
+            if my_role == "admin" and m["user_id"] != current_uid:
+                # 🟢 UI Logic Switch: DM vs Group
+                if is_dm:
+                    if st.button("🚫 Delete Friend", key=f"del_{m['user_id']}", type="primary"):
+                        remove_friend(m["user_id"])
+                        try: kick_group_member(group_id, m["user_id"])
+                        except: pass
+                        st.toast(f"Friend {m['username']} removed.")
+                        st.session_state.active_group = None 
+                        st.rerun()
+                else:
+                    if st.button("Kick", key=f"kick_{m['user_id']}", type="primary"):
+                        kick_group_member(group_id, m["user_id"])
+                        st.rerun()
+            
+            # 使用分隔线分隔成员
+            st.markdown("---")
+
+        if not is_dm and my_role == "admin":
+            with st.expander("Invite User"):
+                inv_code = st.text_input("User ID", key=f"inv_c_{group_id}")
+                if st.button("Invite", key=f"do_inv_{group_id}", use_container_width=True):
+                    try: invite_group_member(group_id, inv_code); st.success("Invited!")
+                    except Exception as e: st.error(f"Error: {e}")
+
 
     with col_chat:
         with st.container(border=True, height=550):
@@ -243,14 +263,12 @@ def render_group_interface(group_id: str, username: str):
                 st.caption("Start the conversation!")
             
             for raw in raws:
-                # 🔥 核心功能 2: 使用 ui_chat 的逻辑渲染精美卡片
+                # 🔥 核心功能 2: 渲染精美卡片
                 msg = normalize_group_message(raw)
                 render_rich_message(msg)
 
-        current_members = [m["username"] for m in members] if 'members' in locals() else []
+        # 权限检查和输入框
         username_val = st.session_state.get("user")
-        
-        # 简单的权限检查，防止未加入者发言
         is_member = False
         if members:
             for m in members:
@@ -261,14 +279,23 @@ def render_group_interface(group_id: str, username: str):
         if not is_member and not is_dm:
              if st.button("Join this group", type="primary"): join_group(group_id); st.rerun()
         else:
-             if st.chat_input(f"Message {group_name}...", key=f"chat_in_{group_id}"):
+             group_name_display = group_name.replace("💬 ", "")
+             if st.chat_input(f"Message {group_name_display}...", key=f"chat_in_{group_id}"):
                  send_group_message(group_id, st.session_state[f"chat_in_{group_id}"])
                  st.rerun()
-
+                 
 def render_home_page(username: str) -> None:
+    # 🐞 DEBUG: 打印 active_group 的值
+    active_group_id = st.session_state.get("active_group")
+    st.sidebar.markdown(f"**DEBUG: Active Group ID:** `{active_group_id}`")
+    
     if st.session_state.active_group is None: process_ai_response()
+    
     col_left, col_right = st.columns([1, 4], gap="medium")
     with col_left: render_social_sidebar(username)
     with col_right:
-        if st.session_state.get("active_group"): render_group_interface(st.session_state.active_group, username)
-        else: render_ai_interface(username)
+        if active_group_id: 
+            render_group_interface(active_group_id, username)
+        else: 
+            render_ai_interface(username)
+            st.warning("⚠️ Group ID is None or AI Assistant selected.")

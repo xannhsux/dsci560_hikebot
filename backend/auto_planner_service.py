@@ -85,7 +85,7 @@ class AutoPlannerService:
             base_url="http://host.docker.internal:11434/v1",
             api_key="ollama",
         )
-        self.model_name = "llama3" 
+        self.model_name = "llama3.2" 
 
     async def run_pipeline(self, chat_id: str, user_message: str):
         triggers = ["go to", "hike", "trail", "plan", "weekend", "saturday", "sunday", "trip", "join", "去", "爬山", "路线", "约"]
@@ -186,3 +186,71 @@ class AutoPlannerService:
             logger.info("✅ Posted.")
         except Exception as e:
             logger.error(f"DB Write failed: {e}")
+            
+# backend/services/auto_planner_service.py
+
+# 引入刚才写的服务
+from services.wta_service import search_wta_trail, get_recent_trip_reports, check_hazards
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def generate_trip_plan(trail_name: str, date_str: str):
+    """
+    生成包含实时路况的行程单
+    """
+    logger.info(f"🔎 Checking WTA reports for {trail_name}...")
+    
+    # 1. 获取 WTA 数据 (这是 RAG 的 Retrieval 部分)
+    wta_context = ""
+    wta_hazards = []
+    
+    try:
+        url = search_wta_trail(trail_name)
+        if url:
+            reports = get_recent_trip_reports(url)
+            wta_hazards = check_hazards(reports)
+            
+            # 把最近的评论摘要拼接起来，喂给 LLM
+            if reports:
+                wta_context = "Recent User Reports from WTA:\n" + "\n- ".join(reports[:3])
+            else:
+                wta_context = "No recent trip reports found on WTA."
+        else:
+            wta_context = "Could not find trail on WTA."
+            
+    except Exception as e:
+        logger.error(f"WTA lookup failed: {e}")
+        wta_context = "WTA data unavailable."
+
+    # 2. 构建 Prompt (把 WTA 数据塞进去)
+    system_prompt = f"""
+    You are an expert hiking guide for the Pacific Northwest.
+    Plan a trip to: {trail_name} on {date_str}.
+    
+    [REAL-TIME CONDITIONS DATA]
+    {wta_context}
+    
+    [CRITICAL INSTRUCTION]
+    - If the reports mention SNOW, ICE, or SLIPPERY conditions, you MUST include 'Microspikes' or 'Traction devices' in the gear_required list.
+    - If reports mention BUGS, include 'Bug spray'.
+    - If reports mention BEARS, include 'Bear spray'.
+    
+    Return ONLY a JSON object with this structure:
+    {{
+      "title": "Trip to {trail_name}",
+      "summary": "...",
+      "stats": {{"dist": "...", "elev": "..."}},
+      "weather_warning": "Based on reports: {', '.join(wta_hazards) if wta_hazards else 'Check local forecast'}",
+      "gear_required": ["Item 1", "Item 2", ...],
+      "fun_fact": "..."
+    }}
+    """
+    
+    # 3. 调用 LLM (这里用你现有的 call_ollama 或类似函数)
+    # response = await call_ollama(system_prompt)
+    # return response
+    
+    # (为了演示，这里直接返回伪代码，你需要把它接入你的 LLM 调用逻辑)
+    logger.info(f"Generated Context for LLM: {wta_context[:100]}...")
+    return system_prompt
