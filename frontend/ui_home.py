@@ -19,25 +19,21 @@ from api import (
 from state import in_group
 from ui_common import render_message_bubble
 
-def render_social_sidebar(username: str):
-    """渲染左侧的好友/群组导航栏"""
-    
-    # 🐞 DEBUG: 打印 active_group 的值 (在 sidebar 中显示)
-    active_group_id = st.session_state.get("active_group")
-    st.sidebar.markdown(f"**DEBUG: Active Group ID:** `{active_group_id}`")
-    
-    c_ref, c_prof = st.columns([1, 3])
-    with c_ref:
-        if st.button("🔄", help="Refresh Data"): st.rerun()
-    with c_prof: st.caption("Last updated: Just now")
-
+def render_social_panel(username: str):
+    """Mobile-friendly navigation panel (groups, friends, profile)."""
     my_code = st.session_state.get("user_code", "Loading...")
-    with st.container(border=True):
-        st.markdown(f"**👤 {username}**")
-        st.code(my_code, language="text")
-        st.caption("Share this ID with friends.")
 
-    st.markdown("---")
+    with st.container(border=True):
+        st.markdown("### 👤 You")
+        st.code(my_code or "—", language="text")
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button("🔄 Refresh", use_container_width=True):
+                st.rerun()
+        with cols[1]:
+            if st.button("🤖 Assistant", use_container_width=True):
+                st.session_state.active_group = None
+                st.rerun()
 
     try: all_groups = fetch_groups()
     except: all_groups = []
@@ -45,83 +41,72 @@ def render_social_sidebar(username: str):
     except: friends = []
     try: pending_reqs = fetch_friend_requests()
     except: pending_reqs = []
-    
-    pending_count = len(pending_reqs)
-    if pending_count > 0: st.warning(f"🔔 {pending_count} Friend Request(s)")
 
     display_groups = [g for g in all_groups if not (g.get("name") or "").upper().startswith("DM:")]
 
-    st.markdown("### 🏔 Groups")
-    if st.button("🤖 AI Assistant", key="btn_group_ai", use_container_width=True):
-        st.session_state.active_group = None
-        st.rerun()
+    with st.container(border=True):
+        st.markdown("### 🏔 Groups")
+        if not display_groups:
+            st.caption("No groups yet.")
+        for g in display_groups:
+            gid = g.get("id")
+            name = g.get("name") or "Group"
+            is_active = st.session_state.get("active_group") == gid
+            label = f"📍 {name}" if is_active else f"# {name}"
+            if st.button(label, key=f"btn_group_{gid}", type="primary" if is_active else "secondary", use_container_width=True):
+                st.session_state.active_group = gid
+                st.rerun()
 
-    for g in display_groups:
-        gid = g.get("id")
-        name = g.get("name") or "Group"
-        is_active = st.session_state.get("active_group") == gid
-        label = f"📍 {name}" if is_active else f"# {name}"
-        type_primary = "primary" if is_active else "secondary"
-        if st.button(label, key=f"btn_group_{gid}", type=type_primary, use_container_width=True):
-            st.session_state.active_group = gid
-            st.rerun()
+        with st.expander("➕ Create Group"):
+            new_grp_name = st.text_input("Group Name", key="new_grp_name")
+            friend_options = {f"{f['username']} (@{f['user_code']})": f['user_code'] for f in friends}
+            selected_labels = st.multiselect("Invite Friends", options=list(friend_options.keys()), key="create_grp_invite")
+            if st.button("Create", key="do_create_grp", use_container_width=True):
+                if new_grp_name:
+                    try:
+                        codes = [friend_options[l] for l in selected_labels]
+                        res = create_group(new_grp_name, codes)
+                        st.toast("Group Created Successfully! 🎉")
+                        st.session_state.active_group = res["group_id"]
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
+                else: st.warning("Please enter a group name.")
 
-    st.markdown("---")
-    st.markdown("### 👥 Friends")
-    if not friends: st.caption("No friends added yet.")
-    else:
-        for f in friends:
-            fid = f.get("id")
-            name = f.get("display_name") or f.get("username")
-            code = f.get("user_code")
-            if st.button(f"👤 {name}", key=f"dm_sidebar_{fid}", use_container_width=True, help=f"ID: {code}"):
-                try:
-                    dm_id = get_or_create_dm(fid)
-                    st.session_state.active_group = dm_id
-                    st.rerun()
-                except Exception as e: st.error(str(e))
+    with st.container(border=True):
+        st.markdown("### 👥 Friends")
+        if friends:
+            for f in friends:
+                fid = f.get("id")
+                name = f.get("display_name") or f.get("username")
+                code = f.get("user_code")
+                if st.button(f"👤 {name}", key=f"dm_sidebar_{fid}", use_container_width=True, help=f"ID: {code}"):
+                    try:
+                        dm_id = get_or_create_dm(fid)
+                        st.session_state.active_group = dm_id
+                        st.rerun()
+                    except Exception as e: st.error(str(e))
+        else:
+            st.caption("No friends added yet.")
 
-    st.markdown("---")
-    
-    with st.expander("➕ Create Group"):
-        new_grp_name = st.text_input("Group Name", key="new_grp_name")
-        friend_options = {f"{f['username']} (@{f['user_code']})": f['user_code'] for f in friends}
-        selected_labels = st.multiselect("Invite Friends", options=list(friend_options.keys()), key="create_grp_invite")
-        if st.button("Create", key="do_create_grp", use_container_width=True):
-            if new_grp_name:
-                try:
-                    codes = [friend_options[l] for l in selected_labels]
-                    res = create_group(new_grp_name, codes)
-                    st.toast("Group Created Successfully! 🎉")
-                    st.session_state.active_group = res["group_id"]
-                    st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
-            else: st.warning("Please enter a group name.")
-
-    add_label = f"👋 Add Friend 🔴 ({pending_count})" if pending_count > 0 else "👋 Add Friend"
-    with st.expander(add_label, expanded=(pending_count > 0)):
-        if pending_reqs:
-            st.info("Pending Requests:")
-            for r in pending_reqs:
-                col_info, col_btn = st.columns([3, 2])
-                with col_info:
-                    st.write(f"**{r['from_username']}**")
-                    st.caption(f"ID: {r['from_user_code']}")
-                with col_btn:
-                    if st.button("Accept", key=f"acc_{r['id']}", type="primary"):
+        pending_count = len(pending_reqs)
+        add_label = f"👋 Add Friend 🔴 ({pending_count})" if pending_count > 0 else "👋 Add Friend"
+        with st.expander(add_label, expanded=(pending_count > 0)):
+            if pending_reqs:
+                st.info("Pending Requests:")
+                for r in pending_reqs:
+                    if st.button(f"Accept {r['from_username']}", key=f"acc_{r['id']}", type="primary", use_container_width=True):
                         accept_friend_request(r['id'])
                         st.toast(f"You are now friends with {r['from_username']}! 🤝")
                         st.rerun()
-            st.divider()
+                st.divider()
 
-        st.write("Add by ID:")
-        new_friend_code = st.text_input("Enter Friend's ID", key="new_friend_code")
-        if st.button("Send Request", key="do_add_friend", use_container_width=True):
-            if new_friend_code:
-                try: 
-                    send_friend_request(new_friend_code)
-                    st.toast(f"Request sent to {new_friend_code} 🚀")
-                except Exception as e: st.error(f"Failed: {e}")
+            new_friend_code = st.text_input("Enter Friend's ID", key="new_friend_code")
+            if st.button("Send Request", key="do_add_friend", use_container_width=True):
+                if new_friend_code:
+                    try: 
+                        send_friend_request(new_friend_code)
+                        st.toast(f"Request sent to {new_friend_code} 🚀")
+                    except Exception as e: st.error(f"Failed: {e}")
 
 def render_ai_interface(username: str):
     """首页的 AI 助手界面 (非群聊)"""
@@ -186,31 +171,24 @@ def render_group_interface(group_id: str, username: str):
                 group_name = group_name.replace("DM: ", "💬 ")
             break
     
-    # Header 
-    c1, c2 = st.columns([6, 1.5])
-    with c1: st.title(group_name)
-    with c2:
-        if st.button("🚪 Exit", key=f"leave_{group_id}"):
-            leave_group(group_id)
-            st.session_state.active_group = None
+    st.title(group_name)
+    if st.button("🚪 Exit", key=f"leave_{group_id}", use_container_width=True):
+        leave_group(group_id)
+        st.session_state.active_group = None
+        st.rerun()
+
+    with st.container(border=True):
+        st.markdown("#### ✨ AI Copilot")
+        st.caption("I'm listening for your plans...")
+        if st.button("🗺 Recommend Trails", use_container_width=True):
+            ask_ai_recommend(group_id)
+            st.toast("AI is thinking... wait a few seconds!")
             st.rerun()
 
-    col_chat, col_info = st.columns([3, 1])
-
-    with col_info:
-        # AI Actions
-        with st.container(border=True):
-            st.markdown("#### ✨ AI Copilot")
-            st.caption("I'm listening for your plans...")
-            if st.button("🗺 Recommend Trails", use_container_width=True):
-                ask_ai_recommend(group_id)
-                st.toast("AI is thinking... wait a few seconds!")
-                st.rerun()
-
-        st.markdown("---")
+    # Members panel (stacked for mobile)
+    with st.container(border=True):
         st.markdown("#### 👥 Members")
         
-        # 成员渲染逻辑
         my_role = "member"
         current_uid = st.session_state.get("current_user_id")
 
@@ -227,11 +205,9 @@ def render_group_interface(group_id: str, username: str):
             st.write(f"{role_icon} **{m['username']}**")
             st.caption(f"@{m['user_code']}")
             
-            # Logic: If Admin AND not myself
             if my_role == "admin" and m["user_id"] != current_uid:
-                # 🟢 UI Logic Switch: DM vs Group
                 if is_dm:
-                    if st.button("🚫 Delete Friend", key=f"del_{m['user_id']}", type="primary"):
+                    if st.button("🚫 Delete Friend", key=f"del_{m['user_id']}", type="primary", use_container_width=True):
                         remove_friend(m["user_id"])
                         try: kick_group_member(group_id, m["user_id"])
                         except: pass
@@ -239,11 +215,9 @@ def render_group_interface(group_id: str, username: str):
                         st.session_state.active_group = None 
                         st.rerun()
                 else:
-                    if st.button("Kick", key=f"kick_{m['user_id']}", type="primary"):
+                    if st.button("Kick", key=f"kick_{m['user_id']}", type="primary", use_container_width=True):
                         kick_group_member(group_id, m["user_id"])
                         st.rerun()
-            
-            # 使用分隔线分隔成员
             st.markdown("---")
 
         if not is_dm and my_role == "admin":
@@ -253,49 +227,41 @@ def render_group_interface(group_id: str, username: str):
                     try: invite_group_member(group_id, inv_code); st.success("Invited!")
                     except Exception as e: st.error(f"Error: {e}")
 
+    # Chat area
+    with st.container(border=True, height=520):
+        try: raws = fetch_group_messages(group_id)
+        except: raws = []
+        
+        if not raws: 
+            st.caption("Start the conversation!")
+        
+        for raw in raws:
+            msg = normalize_group_message(raw)
+            render_rich_message(msg)
 
-    with col_chat:
-        with st.container(border=True, height=550):
-            try: raws = fetch_group_messages(group_id)
-            except: raws = []
-            
-            if not raws: 
-                st.caption("Start the conversation!")
-            
-            for raw in raws:
-                # 🔥 核心功能 2: 渲染精美卡片
-                msg = normalize_group_message(raw)
-                render_rich_message(msg)
+    username_val = st.session_state.get("user")
+    is_member = any(m.get("username") == username_val for m in members)
 
-        # 权限检查和输入框
-        username_val = st.session_state.get("user")
-        is_member = False
-        if members:
-            for m in members:
-                if m['username'] == username_val:
-                    is_member = True
-                    break
-
-        if not is_member and not is_dm:
-             if st.button("Join this group", type="primary"): join_group(group_id); st.rerun()
-        else:
-             group_name_display = group_name.replace("💬 ", "")
-             if st.chat_input(f"Message {group_name_display}...", key=f"chat_in_{group_id}"):
-                 send_group_message(group_id, st.session_state[f"chat_in_{group_id}"])
-                 st.rerun()
+    if not is_member and not is_dm:
+         if st.button("Join this group", type="primary", use_container_width=True): 
+             join_group(group_id); st.rerun()
+    else:
+         group_name_display = group_name.replace("💬 ", "")
+         if st.chat_input(f"Message {group_name_display}...", key=f"chat_in_{group_id}"):
+             send_group_message(group_id, st.session_state[f"chat_in_{group_id}"])
+             st.rerun()
                  
 def render_home_page(username: str) -> None:
-    # 🐞 DEBUG: 打印 active_group 的值
     active_group_id = st.session_state.get("active_group")
-    st.sidebar.markdown(f"**DEBUG: Active Group ID:** `{active_group_id}`")
-    
-    if st.session_state.active_group is None: process_ai_response()
-    
-    col_left, col_right = st.columns([1, 4], gap="medium")
-    with col_left: render_social_sidebar(username)
-    with col_right:
-        if active_group_id: 
-            render_group_interface(active_group_id, username)
-        else: 
-            render_ai_interface(username)
-            st.warning("⚠️ Group ID is None or AI Assistant selected.")
+    if st.session_state.active_group is None:
+        process_ai_response()
+
+    st.markdown("## 📱 HikeBot")
+    st.caption("Mobile-friendly planning and group chat")
+
+    render_social_panel(username)
+
+    if active_group_id: 
+        render_group_interface(active_group_id, username)
+    else: 
+        render_ai_interface(username)

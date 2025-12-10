@@ -3,8 +3,17 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# 1. 数据库 URL
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/hikebot")
+# Build DB URL from env (matches docker-compose and .env.example)
+_host = os.getenv("POSTGRES_HOST", "postgres")
+_port = os.getenv("POSTGRES_PORT", "5432")
+_db = os.getenv("POSTGRES_DB", "hikebot")
+_user = os.getenv("POSTGRES_USER", "hikebot")
+_pwd = os.getenv("POSTGRES_PASSWORD", "hikebot")
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"postgresql://{_user}:{_pwd}@{_host}:{_port}/{_db}",
+)
 
 # 2. 创建引擎
 engine = create_engine(DATABASE_URL)

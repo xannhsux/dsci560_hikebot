@@ -1,5 +1,6 @@
 # backend/app.py
 
+import os
 import json
 import asyncio
 import logging
@@ -11,6 +12,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from openai import AsyncOpenAI
 
 # --- Routers ---
 from auth_router import router as auth_router
@@ -39,6 +41,63 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # 挂载核心路由
 app.include_router(auth_router)
 app.include_router(social_router)
+
+
+# ==============================================================
+#                    Simple Planning Chat
+# ==============================================================
+
+@app.post("/chat")
+async def planning_chat(req: ChatRequest):
+    """Lightweight planning chat for the Streamlit home page."""
+
+    prompt = (req.user_message or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    # Try local Ollama first (default), fall back to a friendly canned reply.
+    try:
+        timeout_secs = float(os.getenv("OPENAI_TIMEOUT", "8"))
+        client = AsyncOpenAI(
+            base_url=os.getenv("OPENAI_BASE_URL", "http://host.docker.internal:11434/v1"),
+            api_key=os.getenv("OPENAI_API_KEY", "ollama"),
+        )
+        model = os.getenv("OPENAI_MODEL", "llama3.2")
+
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are HikeBot, a concise hiking planner. "
+                            "Answer with actionable suggestions: route ideas, weather checks, gear, and safety tips."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=400,
+                timeout=timeout_secs,
+            ),
+            timeout=timeout_secs,
+        )
+        reply = completion.choices[0].message.content or ""
+    except asyncio.TimeoutError:
+        logger.warning("Planning chat timed out; returning fallback.")
+        reply = (
+            "I couldn't reach the model right now. Quick tips: choose a trail that fits your "
+            "group, check weather/parking, pack layers, water, snacks, headlamp, and share your plan."
+        )
+    except Exception as exc:
+        logger.error(f"Planning chat failed: {exc}")
+        reply = (
+            "I couldn't reach the model right now. Quick tips: choose a trail that fits your "
+            "group, check weather/parking, pack layers, water, snacks, headlamp, and share your plan."
+        )
+
+    return {"reply": reply}
 
 # CORS (允许前端跨域)
 app.add_middleware(

@@ -24,6 +24,12 @@ def inject_theme() -> None:
             color: var(--text);
             font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif;
         }
+        /* Mobile-friendly centered canvas */
+        [data-testid="stAppViewContainer"] .main .block-container {
+            max-width: 520px;
+            padding: 1.2rem 1rem 2rem 1rem;
+        }
+        /* Keep buttons comfortable for touch */
         .card {
             background: var(--card);
             border: 1px solid rgba(31,122,80,0.12);
@@ -34,6 +40,8 @@ def inject_theme() -> None:
         .stButton > button {
             border-radius: 8px;
             font-weight: 500;
+            width: 100%;
+            min-height: 46px;
         }
         </style>
         """,
@@ -86,7 +94,7 @@ def render_header(username: str):
             st.rerun()
 
 def main() -> None:
-    st.set_page_config(page_title="HikeBot", page_icon="🥾", layout="wide")
+    st.set_page_config(page_title="HikeBot", page_icon="🥾", layout="centered")
     inject_theme()
     init_state()
 
