@@ -4,20 +4,26 @@ services:
   api:
     image: python:3.11-slim
     working_dir: /app
+    # ⚠️ 注意：为了确保 openai 库被安装，这里 command 会自动安装 requirements.txt
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt
-      && uvicorn app:app --host 0.0.0.0 --port 8000"
+      && uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./backend:/app
     env_file:
       - ./backend/.env.example
     environment:
       - PYTHONUNBUFFERED=1
+      # 👇 新增：设置假的 Key，防止 OpenAI 库报错
+      - OPENAI_API_KEY=ollama
     ports:
       - "8000:8000"
     depends_on:
       - postgres
       - redis
+    # 👇👇👇 关键修改：允许容器访问宿主机网络 (Ollama) 👇👇👇
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   postgres:
     image: postgres:16-alpine
@@ -30,7 +36,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./backend/migrations:/app/migrations:ro   # ← FIXED INDENT
+      - ./backend/migrations:/app/migrations:ro
 
   redis:
     image: redis:7-alpine
