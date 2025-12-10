@@ -21,20 +21,6 @@ from ui_common import render_message_bubble
 
 def render_social_panel(username: str):
     """Mobile-friendly navigation panel (groups, friends, profile)."""
-    my_code = st.session_state.get("user_code", "Loading...")
-
-    with st.container(border=True):
-        st.markdown("### 👤 You")
-        st.code(my_code or "—", language="text")
-        cols = st.columns(2)
-        with cols[0]:
-            if st.button("🔄 Refresh", use_container_width=True):
-                st.rerun()
-        with cols[1]:
-            if st.button("🤖 Assistant", use_container_width=True):
-                st.session_state.active_group = None
-                st.rerun()
-
     try: all_groups = fetch_groups()
     except: all_groups = []
     try: friends = fetch_friends()
@@ -259,9 +245,8 @@ def render_home_page(username: str) -> None:
     st.markdown("## 📱 HikeBot")
     st.caption("Mobile-friendly planning and group chat")
 
-    render_social_panel(username)
-
     if active_group_id: 
         render_group_interface(active_group_id, username)
     else: 
         render_ai_interface(username)
+        render_social_panel(username)

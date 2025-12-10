@@ -86,7 +86,9 @@ def render_auth_gate() -> None:
 def render_header(username: str):
     c1, c2 = st.columns([5, 1])
     with c1:
-        st.caption(f"Logged in as **{username}**")
+        user_code = st.session_state.get("user_code")
+        suffix = f" ({user_code})" if user_code else ""
+        st.caption(f"Logged in as **{username}**{suffix}")
     with c2:
         if st.button("Logout", key="logout_btn", type="secondary"):
             for key in list(st.session_state.keys()):
