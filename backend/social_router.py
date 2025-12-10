@@ -1,16 +1,24 @@
-# backend/social_router.py (请完全覆盖)
-from typing import List, Dict, Any
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+# backend/social_router.py
 
+from typing import List, Dict, Any, Optional
+from uuid import UUID
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from sqlalchemy.orm import Session
+
+# --- Internal Imports ---
 from auth_router import get_current_user
 from pg_db import fetch_all, fetch_one, fetch_one_returning, execute, get_cursor
+from db import get_db  # 需要确保 backend/db.py 存在并提供 get_db 依赖
 from models import (
     AuthUser, FriendAddRequest, FriendRequestsResponse, FriendRequestItem, FriendAcceptRequest, FriendSummary,
     GroupCreateRequest, GroupSummary, GroupMemberInfo, GroupMessageModel, MessageCreateRequest,
     DMRequest, InviteRequest, KickRequest, RemoveFriendRequest
 )
+
+# --- AI Services ---
 import ai_service
+from auto_planner_service import AutoPlannerService  # 引入新的自动规划服务
 
 router = APIRouter(prefix="/social", tags=["social"])
 
@@ -46,10 +54,8 @@ def accept_friend(p: FriendAcceptRequest, u: AuthUser = Depends(get_current_user
         cur.execute("INSERT INTO friendships (user_id, friend_id) VALUES (%(f)s, %(u)s) ON CONFLICT DO NOTHING", {"u": u.id, "f": req["from_user_id"]})
     return {"message": "Accepted"}
 
-# 🟢 新增：删除好友
 @router.post("/friends/remove", response_model=Dict[str, Any])
 def remove_friend(p: RemoveFriendRequest, u: AuthUser = Depends(get_current_user)):
-    # 双向删除 friendship
     execute(
         "DELETE FROM friendships WHERE (user_id=%(u)s AND friend_id=%(f)s) OR (user_id=%(f)s AND friend_id=%(u)s)",
         {"u": u.id, "f": p.friend_id}
@@ -59,7 +65,6 @@ def remove_friend(p: RemoveFriendRequest, u: AuthUser = Depends(get_current_user
 @router.post("/friends/dm", response_model=Dict[str, Any])
 def get_or_create_dm(p: DMRequest, u: AuthUser = Depends(get_current_user)):
     if p.friend_id == u.id: raise HTTPException(400, "Cannot DM self")
-    # Fix: ensure we only get DM groups
     existing = fetch_one("""SELECT g.id FROM groups g JOIN group_members gm1 ON g.id=gm1.group_id JOIN group_members gm2 ON g.id=gm2.group_id WHERE gm1.user_id=%(me)s AND gm2.user_id=%(f)s AND g.name LIKE 'DM:%%' LIMIT 1""", {"me": u.id, "f": p.friend_id})
     if existing: return {"group_id": existing["id"], "new": False}
     friend = fetch_one("SELECT username FROM users WHERE id=%(id)s", {"id": p.friend_id})
@@ -123,13 +128,34 @@ def get_msgs(group_id: UUID, u: AuthUser = Depends(get_current_user)):
     return {"messages": [GroupMessageModel(**r) for r in rows]}
 
 @router.post("/groups/{group_id}/messages", response_model=GroupMessageModel)
-def send_msg(group_id: UUID, p: MessageCreateRequest, u: AuthUser = Depends(get_current_user)):
-    r = fetch_one_returning("INSERT INTO group_messages (group_id, user_id, sender_display, role, content) VALUES (%(gid)s, %(u)s, %(s)s, 'user', %(c)s) RETURNING id, group_id, sender_display as sender, role, content, created_at", {"gid": str(group_id), "u": u.id, "s": u.username, "c": p.content})
-    try: ai_service.process_message_hook(str(group_id), p.content)
-    except: pass
+def send_msg(
+    group_id: UUID, 
+    p: MessageCreateRequest, 
+    background_tasks: BackgroundTasks,  # <--- 新增：后台任务
+    u: AuthUser = Depends(get_current_user),
+    db_session: Session = Depends(get_db) # <--- 新增：获取 Session 供 AI Service 使用
+):
+    # 1. 快速写入数据库 (使用 pg_db raw sql)
+    r = fetch_one_returning(
+        "INSERT INTO group_messages (group_id, user_id, sender_display, role, content) VALUES (%(gid)s, %(u)s, %(s)s, 'user', %(c)s) RETURNING id, group_id, sender_display as sender, role, content, created_at",
+        {"gid": str(group_id), "u": u.id, "s": u.username, "c": p.content}
+    )
+
+    # 2. 触发后台 AI 观察者 (Auto Planner)
+    # 实例化 AutoPlannerService
+    planner = AutoPlannerService(db_session)
+    
+    # 异步执行 Pipeline：分析意图 -> 模糊匹配 -> 查天气 -> 生成公告
+    # 注意：我们传递 str(group_id) 和用户消息内容
+    background_tasks.add_task(
+        planner.run_pipeline, 
+        chat_id=str(group_id), # 传递 String 类型的 UUID
+        user_message=p.content
+    )
+
     return GroupMessageModel(**r)
 
-# --- AI ---
+# --- AI (Manual Triggers) ---
 @router.post("/groups/{group_id}/ai/recommend_routes")
 def ai_recommend(group_id: UUID, u: AuthUser=Depends(get_current_user)):
     return ai_service.generate_route_suggestions(str(group_id))

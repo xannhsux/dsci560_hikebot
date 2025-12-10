@@ -1,5 +1,6 @@
-# ui_chat.py
+# frontend/ui_chat.py
 from __future__ import annotations
+import json
 from typing import Dict, Any
 
 import streamlit as st
@@ -26,7 +27,75 @@ def normalize_group_message(raw: Dict[str, Any]) -> Dict[str, Any]:
     sender = raw.get("sender") or raw.get("sender_display") or "Unknown"
     content = raw.get("content", "")
     ts = raw.get("timestamp") or raw.get("created_at")
-    return {"sender": sender, "content": content, "timestamp": ts}
+    role = raw.get("role", "user") # Extract role if available
+    return {"sender": sender, "content": content, "timestamp": ts, "role": role}
+
+
+def render_rich_message(msg: Dict[str, Any]) -> None:
+    """
+    Smart renderer that distinguishes between plain text messages and
+    structured AI JSON announcements (HikeBot Trip Cards).
+    """
+    sender = msg.get("sender", "Unknown")
+    content = msg.get("content", "")
+    role = msg.get("role", "user")
+
+    # 1. Check if this is a potential AI Card (JSON)
+    # Usually sent by HikeBot or role='assistant'
+    is_announcement = False
+    data = {}
+
+    if sender == "HikeBot" or role == "assistant":
+        try:
+            parsed = json.loads(content)
+            # Basic validation to ensure it's our trip schema
+            if isinstance(parsed, dict) and "title" in parsed:
+                data = parsed
+                is_announcement = True
+        except (json.JSONDecodeError, TypeError):
+            # Not JSON, treat as normal text
+            pass
+
+    # 2. Render UI
+    if is_announcement:
+        # === Render AI Trip Card ===
+        with st.chat_message("assistant", avatar="🤖"):
+            st.caption(f"Bot Suggestion via {sender}")
+            
+            # Header
+            st.markdown(f"### 🌲 {data.get('title', 'Trip Plan')}")
+            
+            # Summary
+            st.write(data.get('summary', ''))
+            
+            # Stats Metrics
+            stats = data.get('stats', {})
+            if stats:
+                c1, c2 = st.columns(2)
+                c1.metric("📏 Distance", stats.get('dist', 'N/A'))
+                c2.metric("⛰️ Elevation", stats.get('elev', 'N/A'))
+            
+            # Weather Warning
+            weather = data.get('weather_warning')
+            if weather:
+                st.info(f"🌤 **Weather Note:** {weather}")
+            
+            # Gear Checklist
+            gear = data.get('gear_required', [])
+            if gear:
+                with st.expander("🎒 Required Gear Checklist", expanded=False):
+                    for idx, item in enumerate(gear):
+                        # Use a unique key to avoid Streamlit duplicate ID errors
+                        st.checkbox(item, value=True, key=f"gear_{idx}_{str(hash(content))[:8]}", disabled=True)
+            
+            # Future expansion: Add a 'Join Trip' button here
+            # if st.button("Join this Hike", key=f"join_{str(hash(content))[:8]}"):
+            #     pass
+
+    else:
+        # === Render Standard Message Bubble ===
+        # Fallback to the common renderer for human messages or plain bot text
+        render_message_bubble(msg)
 
 
 def render_members_panel() -> None:
@@ -163,7 +232,8 @@ def render_chat_page(username: str) -> None:
         else:
             for raw in raws:
                 msg = normalize_group_message(raw)
-                render_message_bubble(msg)
+                # UPDATED: Use the new rich renderer
+                render_rich_message(msg)
 
     # Input box at the bottom
     text = st.chat_input("Share an update with the group…", key="group_chat_input")

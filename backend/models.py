@@ -1,13 +1,63 @@
-# backend/models.py (请完全覆盖)
-from __future__ import annotations
+# backend/models.py
+
+from sqlalchemy import Column, Integer, String, Boolean, Float, DateTime, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from datetime import datetime
-from typing import List, Optional, Literal, Dict, Any
-from uuid import UUID
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
+
+# 引入我们在 db.py 里定义的 Base
+from db import Base
 
 # ==========================================
-# 1. Core Models
+# 1. SQLAlchemy Models (数据库表定义)
 # ==========================================
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    user_code = Column(String, unique=True)
+    password_hash = Column(String) 
+
+class Trail(Base):
+    __tablename__ = "trails"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    location = Column(String)
+    length_km = Column(Float)
+    elevation_gain_m = Column(Integer)
+    difficulty_rating = Column(Float)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    features = Column(String)
+
+class GroupMessage(Base):
+    __tablename__ = "group_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(String, index=True) 
+    user_id = Column(Integer, nullable=True)
+    sender_display = Column(String)
+    role = Column(String, default="user") 
+    content = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class WeatherSnapshot(Base):
+    __tablename__ = "weather_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    forecast_date = Column(DateTime)
+    data = Column(Text) # JSON string
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ==========================================
+# 2. Pydantic Models (API 请求/响应 Schema)
+# ==========================================
+
+# --- Auth 相关 (匹配 auth_router.py) ---
 
 class AuthUser(BaseModel):
     id: int
@@ -17,7 +67,8 @@ class AuthUser(BaseModel):
 class SignupRequest(BaseModel):
     username: str
     password: str
-    user_code: str
+    user_code: str 
+    email: Optional[str] = None
 
 class LoginRequest(BaseModel):
     username: str
@@ -27,60 +78,34 @@ class AuthResponse(BaseModel):
     user: AuthUser
     message: str
 
-class Route(BaseModel):
-    id: str | int
-    name: str
-    location: str
-    distance_km: float
-    elevation_gain_m: int
-    difficulty: str
-    drive_time_min: int
-    tags: List[str] = []
-    summary: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    gpx_path: Optional[str] = None 
-
-class RouteListResponse(BaseModel):
-    routes: List[Route]
-
-class WeatherRequest(BaseModel):
-    route_id: str
-    start_iso: datetime
-
-class WeatherSnapshot(BaseModel):
-    summary: str
-    temp_c: float
-    precip_prob: float
-    lightning_risk: str
-    fire_risk: str
+# --- Chat 相关 (匹配 app.py) ---
 
 class ChatRequest(BaseModel):
     user_message: str
-    filters: Optional[Dict[str, Any]] = None 
 
 class ChatResponse(BaseModel):
-    reply: str
+    response: str
 
-class ChatMessage(BaseModel): 
+# --- Social & Group 相关 (匹配 social_router.py) ---
+
+class GroupMessageModel(BaseModel):
+    id: int
+    group_id: str
+    sender: str
     role: str
     content: str
-    timestamp: datetime = datetime.now()
-    username: Optional[str] = None
-    user_message: Optional[str] = None
+    created_at: Optional[datetime] = None
 
-class FriendAddRequest(BaseModel):
-    friend_code: str
-
-# 🟢 新增：删除好友请求模型
-class RemoveFriendRequest(BaseModel):
-    friend_id: int
+class MessageCreateRequest(BaseModel):
+    content: str
 
 class FriendSummary(BaseModel):
     id: int
     username: str
     user_code: str
-    display_name: Optional[str] = None
+
+class FriendAddRequest(BaseModel):
+    friend_code: str
 
 class FriendRequestItem(BaseModel):
     id: int
@@ -90,26 +115,27 @@ class FriendRequestItem(BaseModel):
     created_at: datetime
 
 class FriendRequestsResponse(BaseModel):
-    requests: List[FriendRequestItem]
+    pass 
 
 class FriendAcceptRequest(BaseModel):
-    request_id: int | str
+    request_id: int
+
+class RemoveFriendRequest(BaseModel):
+    friend_id: int
 
 class DMRequest(BaseModel):
     friend_id: int
 
-# --- Groups ---
+class GroupSummary(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
 
 class GroupCreateRequest(BaseModel):
     name: str
-    description: Optional[str] = ""
+    description: Optional[str] = None
     member_codes: List[str] = []
-
-class GroupSummary(BaseModel):
-    id: UUID
-    name: str
-    description: Optional[str]
-    created_at: datetime
 
 class GroupMemberInfo(BaseModel):
     user_id: int
@@ -117,65 +143,8 @@ class GroupMemberInfo(BaseModel):
     user_code: str
     role: str
 
-class GroupMessageModel(BaseModel):
-    id: int
-    group_id: UUID
-    sender: str
-    role: str
-    content: str
-    created_at: datetime
-
-class MessageCreateRequest(BaseModel):
-    content: str
-
 class InviteRequest(BaseModel):
     friend_code: str
 
 class KickRequest(BaseModel):
     user_id: int
-
-class AnnounceRequest(BaseModel):
-    route_id: str
-
-# ==========================================
-# 2. Legacy Models (Keep for compatibility)
-# ==========================================
-class GroupJoinRequest(BaseModel):
-    route_id: str
-    username: str
-class GroupMembersResponse(BaseModel):
-    route_id: str
-    members: List[str]
-class GroupMessage(BaseModel):
-    sender: str
-    content: str
-    timestamp: datetime
-class GroupChatPost(BaseModel):
-    route_id: str
-    username: str
-    content: str
-class GroupChatResponse(BaseModel):
-    route_id: str
-    messages: List[GroupMessage]
-class TripHistoryEntry(BaseModel):
-    trip_name: str
-    date: str
-    role: str
-    status: str
-class TripHistoryResponse(BaseModel):
-    trips: List[TripHistoryEntry]
-class GearRequest(BaseModel):
-    season: str
-    hours: float = 0
-    altitude_band: str = "low"
-    terrain: List[str] = []
-    distance_km: Optional[float] = None
-    elevation_gain_m: Optional[int] = None
-    group_size: int = 1
-    difficulty: Optional[str] = None 
-    has_water: bool = True 
-class GearChecklist(BaseModel):
-    items: List[str]
-    water_liters: float = 0.0
-    calories_kcal: int = 0
-    notes: Optional[str] = None
