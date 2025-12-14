@@ -17,6 +17,7 @@ from models import Trail
 # --- 引入 WTA 爬虫服务 ---
 # 注意：这些函数在 services 文件夹里是同步的，我们在下面进行调用
 from services.wta_service import search_wta_trail, get_recent_trip_reports, check_hazards
+from route_provider import load_routes
 
 logger = logging.getLogger(__name__)
 
@@ -165,22 +166,41 @@ class AutoPlannerService:
 
     # --- Fuzzy Match (保持不变) ---
     def _fuzzy_match_trail(self, raw_name: str):
-        # ... (此处代码不变，省略) ...
+        """Try DB → Open-Meteo routes → mock trails."""
+        # 1) Database trails
         try:
             all_trails = self.db.query(Trail).all()
             if all_trails:
                 choices = {t.name: t for t in all_trails}
                 best_match, score = process.extractOne(raw_name, list(choices.keys()))
-                if score > 70: return choices[best_match]
-        except: pass
-        
+                if score > 70:
+                    return choices[best_match]
+        except Exception:
+            pass
+
+        # 2) Open-Meteo / route_provider (seed fallback)
+        try:
+            remote_routes = load_routes()
+            if remote_routes:
+                choices = {r["name"]: r for r in remote_routes if r.get("name")}
+                best = process.extractOne(raw_name, list(choices.keys()))
+                if best and best[1] > 60:
+                    data = choices[best[0]]
+                    obj = type("RouteObj", (), {})()
+                    for k, v in data.items():
+                        setattr(obj, k, v)
+                    return obj
+        except Exception as exc:
+            logger.warning(f"Route lookup via Open-Meteo failed: {exc}")
+
+        # 3) Mock trails
         mock_choices = {t['name']: t for t in MOCK_TRAILS_DB}
         best_match, score = process.extractOne(raw_name, list(mock_choices.keys()))
         if score > 50:
             t_data = mock_choices[best_match]
-            class MockTrailObj: pass
-            obj = MockTrailObj()
-            for k, v in t_data.items(): setattr(obj, k, v)
+            obj = type("MockTrailObj", (), {})()
+            for k, v in t_data.items():
+                setattr(obj, k, v)
             return obj
         return None
 
