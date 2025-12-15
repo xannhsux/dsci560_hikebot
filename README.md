@@ -168,3 +168,33 @@ Results are cached for 1 hour and include:
 ---
 
 Future milestones will include richer group management, improved real-time chat, smarter packing checklists, and enhanced AI-assisted trip planning.
+
+## Quick Setup (Graders)
+1. Prereqs: Docker + Docker Compose; ensure the `ollama` model server is running and has a model.
+   ```bash
+   # start Ollama (if not already running)
+   docker run -d --name ollama --restart unless-stopped -p 11434:11434 -v ollama:/root/.ollama ollama/ollama
+   # pull the model used by the app
+   docker exec -it ollama ollama pull llama3.2
+   ```
+2. Copy env files:
+   ```bash
+   cp backend/.env.example backend/.env
+   cp frontend/.env.example frontend/.env
+   ```
+   - The backend is set to use seed routes only (Open-Meteo disabled), so no external API keys needed. Keep `OPENAI_API_KEY=ollama`.
+3. Start the stack:
+   ```bash
+   docker compose up --build
+   ```
+   - API: http://localhost:8000
+   - UI: http://localhost:8501
+4. Smoke test announcements (group chat):
+   - In the UI, create or join a group.
+   - Send a message like `go to Mount Baden-Powell tomorrow` (a seed route).
+   - The AI should post a JSON card announcement (trip summary + gear list) in the thread.
+
+## What This Project Does
+- FastAPI backend: auth, friends, groups, chat, and an async AI planner that listens to group messages, extracts intent, matches routes (seed data), fetches WTA context, and posts a structured announcement card.
+- Streamlit frontend: social sidebar, group chat, and AI planning UI with rich card rendering for announcements.
+- Data sources: seed routes in `backend/seed_routes.py` (Open-Meteo route loading disabled by default); WTA scraping for recent reports; Ollama (`llama3.2`) for intent extraction and plan generation.
