@@ -1,15 +1,7 @@
-"""
-Seed data for early development and manual testing.
-
-These records stand in for a real routes table until we connect a database
-and GPX catalog. Each entry keeps the metadata our hiking chatbot needs for
-filtering and reasoning.
-"""
+"""Static seed routes for development/manual testing (Trailforks removed)."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import List, Literal, NotRequired, TypedDict
 
 Tag = Literal["dog_friendly", "camping", "water_source", "loop", "summit"]
@@ -28,10 +20,6 @@ class SeedRoute(TypedDict):
     summary: str
     latitude: NotRequired[float | None]
     longitude: NotRequired[float | None]
-
-
-DATA_DIR = Path(__file__).resolve().parent / "data"
-TRAILFORKS_EXPORT = DATA_DIR / "trailforks_routes.json"
 
 
 FALLBACK_ROUTES: List[SeedRoute] = [
@@ -109,11 +97,5 @@ FALLBACK_ROUTES: List[SeedRoute] = [
 
 
 def get_seed_routes() -> List[SeedRoute]:
-    """Prefer Trailforks export if present, otherwise ship with fallback fixtures."""
-    if TRAILFORKS_EXPORT.exists():
-        try:
-            payload = json.loads(TRAILFORKS_EXPORT.read_text())
-            return list(payload)
-        except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-            raise RuntimeError(f"Invalid Trailforks export: {TRAILFORKS_EXPORT}") from exc
+    """Return built-in fallback fixtures (no Trailforks import)."""
     return list(FALLBACK_ROUTES)

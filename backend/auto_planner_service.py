@@ -91,13 +91,22 @@ class AutoPlannerService:
             return
 
         extraction = await self._extract_intent(user_message)
-        if not extraction.is_planning_trip or not extraction.trail_name_raw:
-            return
+
+        # --- Fallback: 如果抽取失败，尝试直接从原文模糊匹配路线 ---
+        trail_name = extraction.trail_name_raw
+        if not extraction.is_planning_trip or not trail_name:
+            trail_name = self._guess_trail_name_from_text(user_message)
+            if not trail_name:
+                logger.info("No trail detected; skipping AI pipeline.")
+                return
+            extraction.is_planning_trip = True
+            extraction.trail_name_raw = trail_name
 
         logger.info(f"🚀 (Async Ollama) Intent: '{extraction.trail_name_raw}'")
 
         trail_record = self._fuzzy_match_trail(extraction.trail_name_raw)
         if not trail_record:
+            logger.info(f"No trail match for '{extraction.trail_name_raw}'; skipping.")
             return
 
         # ---------------------------------------------
@@ -189,6 +198,9 @@ class AutoPlannerService:
                     obj = type("RouteObj", (), {})()
                     for k, v in data.items():
                         setattr(obj, k, v)
+                    # Normalize keys from seed/Open-Meteo data
+                    if getattr(obj, "length_km", None) is None and getattr(obj, "distance_km", None) is not None:
+                        setattr(obj, "length_km", getattr(obj, "distance_km"))
                     return obj
         except Exception as exc:
             logger.warning(f"Route lookup via Open-Meteo failed: {exc}")
@@ -202,6 +214,38 @@ class AutoPlannerService:
             for k, v in t_data.items():
                 setattr(obj, k, v)
             return obj
+        return None
+
+    def _guess_trail_name_from_text(self, text: str) -> Optional[str]:
+        """
+        Heuristic fallback: try to pick the best trail name directly from user text.
+        This helps when the LLM intent extractor fails or times out.
+        """
+        candidates = []
+
+        # 1) DB trails (if any)
+        try:
+            trails = self.db.query(Trail).all()
+            candidates.extend([t.name for t in trails if t.name])
+        except Exception:
+            pass
+
+        # 2) Open-Meteo / seed routes
+        try:
+            remote_routes = load_routes() or []
+            candidates.extend([r["name"] for r in remote_routes if r.get("name")])
+        except Exception:
+            pass
+
+        # 3) Mock trails
+        candidates.extend([t["name"] for t in MOCK_TRAILS_DB])
+
+        if not candidates:
+            return None
+
+        best = process.extractOne(text, candidates)
+        if best and best[1] > 40:
+            return best[0]
         return None
 
     # --- JSON Generation (WTA PROMPT INJECTION) ---

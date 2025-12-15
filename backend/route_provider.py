@@ -39,12 +39,8 @@ OPENMETEO_TRAILS_URL = os.getenv("OPENMETEO_TRAILS_URL", "https://api.open-meteo
 
 
 def load_routes() -> List[RouteRecord]:
-    """Load routes from Open-Meteo Hiking; fall back to seed fixtures if unavailable."""
-    routes = _load_openmeteo_routes()
-    if routes:
-        return routes
-
-    logger.info("Falling back to built-in seed routes.")
+    """Load only built-in seed fixtures (Open-Meteo disabled by request)."""
+    logger.info("Using seed routes only (Open-Meteo disabled).")
     return _load_seed_routes()
 
 
